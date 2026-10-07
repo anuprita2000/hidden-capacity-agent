@@ -415,14 +415,26 @@ def page_line():
 
 def machine_body(u):
     m, ct, cap = u["metrics"], u["cycle_time"], u["capacity"]
+    made = m["good_parts"] + m["scrap_parts"]
+    planned = m["planned_hours"]
+    status = {"good": "Good", "warning": "Watch", "critical": "Poor"}[oee_kind(m["oee"])]
     tiles([
-        ("OEE", f"{m['oee']:.1%}", badge(oee_kind(m["oee"]), {"good": "Good", "warning": "Watch", "critical": "Poor"}[oee_kind(m["oee"])])),
-        ("Availability", f"{m['availability']:.1%}", f"{m['run_hours']} of {m['planned_hours']} h running"),
-        ("Performance", f"{m['performance']:.1%}", f"vs true cycle {ct['true_ct_s']} s"),
-        ("Quality", f"{m['quality']:.1%}", f"{m['scrap_parts']} scrap"),
-        ("Good parts / h", f"{m['throughput_per_hour']}", f"{m['good_parts']:,} today"),
-        ("Hours lost", f"{u['hours_lost']}", "of planned time"),
+        ("OEE", f"{m['oee']:.1%}", f"{badge(oee_kind(m['oee']), status)}<br>world class is 85%"),
+        ("Availability", f"{m['availability']:.1%}",
+         f"ran {m['run_hours']:.1f} h of {planned:.1f} h planned"),
+        ("Performance", f"{m['performance']:.1%}",
+         f"speed while running, vs best {ct['true_ct_s']:g} s/cycle"),
+        ("Quality", f"{m['quality']:.1%}",
+         f"{m['good_parts']:,} good + {m['scrap_parts']:,} scrap = {made:,} made"),
+        ("Good parts / hour", f"{m['throughput_per_hour']:g}",
+         f"{m['good_parts']:,} good parts in {planned:.0f} planned hours"),
+        ("Hours lost", f"{u['hours_lost']:.1f} h",
+         f"of {planned:.1f} planned hours ({u['hours_lost'] / planned:.0%})" if planned else ""),
     ])
+    st.caption(f"How to read this: OEE = Availability × Performance × Quality "
+               f"({m['availability']:.0%} × {m['performance']:.0%} × {m['quality']:.0%} = {m['oee']:.0%}). "
+               f"Planned time = {planned:.1f} h (two 8-hour shifts minus breaks). "
+               f"Hours lost = planned time not spent making good parts at full speed.")
     if ct["flag"]:
         st.warning(f"**Cycle time is wrong in SAP.** SAP says {ct['sap_ct_s']} s, the PLC shows {ct['true_ct_s']} s "
                    f"({ct['diff_pct']}% gap over {ct['cycles_sampled']:,} cycles). SAP shows a max of "
