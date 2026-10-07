@@ -27,7 +27,7 @@ The same machines can give opposite answers depending on how they connect, so th
 | **Different parts → one assembly** | Press 1 (outer panel) + Press 3 (inner panel) → weld cell | complete sets = the smallest of (output ÷ parts per set). The slowest feeder limits it. |
 | **Same part → outputs add** | two presses stamping the same bracket | the sum of their outputs |
 
-On the sample data, Line A is **(Press 1 + Press 3) → Weld cell 1 → Packing 1**. Press 1 makes 1,778 outer panels but Press 3 only 1,071 inner panels, so the weld cell gets 1,071 complete sets. Press 3 is the bottleneck. If the two presses made the *same* part instead, they would supply 2,849/day, and Weld cell 1 would become the bottleneck.
+On the sample data, Line A is **(Press 1 + Press 3) → Weld cell 1 → Packing 1**. Press 1 makes 1,574 outer panels but Press 3 only 1,098 inner panels, so the weld cell gets 1,098 complete sets. Press 3 is the bottleneck. If the two presses made the *same* part instead, they would supply 2,672/day, and Weld cell 1 would become the bottleneck.
 
 ## Two modes
 
@@ -39,8 +39,10 @@ On the sample data, Line A is **(Press 1 + Press 3) → Weld cell 1 → Packing 
 Lines are saved on the Line setup page (config/lines.json); the 6 am run analyses every saved line.
 
 **Line mode can change the decision.** On the sample data:
-- **Press 1 → Press 3 → Weld 1 → Pack 1:** Press 3 is the bottleneck at 1,071/day against demand of 1,250. The verdict is **Not yet**: fix Press 3's short stops, job changes and start-up idle first.
-- **Swap Weld 1 for Weld 2:** Press 3 is still today's bottleneck, but Weld 2 sits only 51 parts above it and can't reach demand even with its losses recovered. The verdict is **Yes, add capacity at Weld cell 2**, not a new press.
+- **(Press 1 + Press 3) → Weld 1 → Pack 1:** Press 3 is the bottleneck at 1,098 sets/day against demand of 1,250. The verdict is **Not yet**: fix Press 3's short stops, job changes and start-up idle first.
+- **Swap Weld 1 for Weld 2:** Press 3 is still today's bottleneck, but Weld 2 sits only 7 units above it and can't reach demand even with its losses recovered. The verdict is **Yes, add capacity at Weld cell 2**, not a new press.
+
+**OEE range on the sample data:** every machine runs below 85% OEE on every day (79–83% for most machines, 73–76% for Press 3). `generate_data.py` re-checks this with the agent's own OEE maths and fails if any machine reaches 85%.
 
 ## Who decides what
 

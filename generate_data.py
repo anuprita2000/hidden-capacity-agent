@@ -34,7 +34,9 @@ HOLIDAYS = {date(2026, 10, 4)}  # Sunday, plant closed
 SHIFTS = [("A", "06:00", "14:00", "10:00", "10:30"),
           ("B", "14:00", "22:00", "18:00", "18:30")]
 
-HEALTHY = dict(startup=(1, 3), post_break=(0.5, 2), job_changes=[240], stops=2, breakdown=0.1, slow_windows=1)
+# Typical machines: slow start-ups and restarts, two changeovers per shift, regular short stops.
+# Tuned so every machine runs below 85% OEE (checked at the end of main()).
+HEALTHY = dict(startup=(5, 10), post_break=(5, 10), job_changes=[150, 330], stops=8, breakdown=0.2, slow_windows=2)
 MACHINES = {
     "PRS-01": dict(HEALTHY, name="Press 1 (double-hit die)", type="press", ct=55, sap_ct=55, ppc=2),
     "PRS-02": dict(HEALTHY, name="Press 2", type="press", ct=31, sap_ct=31, ppc=1),
@@ -42,10 +44,10 @@ MACHINES = {
                    job_changes=[150, 330], stops=5, breakdown=0.25, slow_windows=2, cluster=True),
     "PRS-04": dict(HEALTHY, name="Press 4", type="press", ct=30, sap_ct=30.5, ppc=1),
     "PRS-05": dict(HEALTHY, name="Press 5", type="press", ct=32, sap_ct=32, ppc=1),
-    "WLD-01": dict(name="Weld cell 1", type="weld", ct=34, sap_ct=34, ppc=1, startup=(2, 5), post_break=(2, 5),
-                   job_changes=[240], stops=4, breakdown=0.15, slow_windows=1),
-    "WLD-02": dict(name="Weld cell 2", type="weld", ct=38, sap_ct=40, ppc=1, startup=(5, 9), post_break=(5, 9),
-                   job_changes=[120, 300], stops=8, breakdown=0.3, slow_windows=2),
+    "WLD-01": dict(name="Weld cell 1", type="weld", ct=34, sap_ct=34, ppc=1, startup=(4, 8), post_break=(4, 8),
+                   job_changes=[150, 330], stops=6, breakdown=0.2, slow_windows=2),
+    "WLD-02": dict(name="Weld cell 2", type="weld", ct=38, sap_ct=40, ppc=1, startup=(6, 10), post_break=(6, 10),
+                   job_changes=[120, 300], stops=11, breakdown=0.35, slow_windows=2),
     "PCK-01": dict(HEALTHY, name="Packing 1", type="pack", ct=22, sap_ct=22, ppc=1),
 }
 
@@ -133,7 +135,8 @@ def main():
                   for d in days for sh in SHIFTS]).to_csv(DATA_DIR / "shift_calendar.csv", index=False)
 
     plc_rows, bookings = [], []
-    for machine in MACHINES:
+    for idx, machine in enumerate(MACHINES):
+        rng = np.random.default_rng([SEED, idx])  # own stream per machine
         state = {"counter": int(rng.integers(100000, 900000)), "order": 1}
         for d in days:
             if d in HOLIDAYS:
@@ -176,6 +179,27 @@ def main():
                   for d in days for t in list(MACHINES) + ["LINE"]]).to_csv(DATA_DIR / "demand.csv", index=False)
 
     print(f"Wrote {len(plc):,} PLC rows for {len(MACHINES)} machines, {len(bookings)} SAP bookings to {DATA_DIR}/")
+    check_oee_ceiling()
+
+
+OEE_CEILING = 0.85  # requirement: every machine strictly below 85% OEE on every production day
+
+
+def check_oee_ceiling():
+    """Run the agent's own OEE maths over the new data and fail loudly if any machine-day reaches the ceiling."""
+    import rules
+    data = rules.load(DATA_DIR)
+    worst = {}
+    for d in rules.open_days(data):
+        for m in data["master"].index:
+            ct = rules.true_cycle_time(data, m, d)["true_ct_s"]
+            oee = rules.metrics_and_losses(data, m, d, ct)[0]["oee"]
+            worst[m] = max(worst.get(m, 0), oee)
+    print("Highest daily OEE per machine: " + ", ".join(f"{m} {o:.1%}" for m, o in worst.items()))
+    over = {m: o for m, o in worst.items() if o >= OEE_CEILING}
+    if over:
+        raise SystemExit(f"OEE check FAILED: {over} reach {OEE_CEILING:.0%}. Increase their losses in MACHINES.")
+    print(f"OEE check passed: every machine is below {OEE_CEILING:.0%} on every day.")
 
 
 if __name__ == "__main__":

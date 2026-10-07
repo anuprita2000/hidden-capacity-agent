@@ -49,7 +49,8 @@ def load(data_dir=DATA_DIR):
         "demand": pd.read_csv(data_dir / "demand.csv", parse_dates=["date"]),
     }
     d["costs"] = pd.read_csv(data_dir / "costs.csv").set_index("item")["value"].to_dict()
-    d["plc_by_machine"] = {m: g.sort_values("timestamp") for m, g in d["plc"].groupby("machine")}
+    d["plc_by_machine"] = {m: g.sort_values("timestamp", kind="stable")  # keep PLC order on same-second events
+                            for m, g in d["plc"].groupby("machine")}
     d["_cache"] = {}
     return d
 
