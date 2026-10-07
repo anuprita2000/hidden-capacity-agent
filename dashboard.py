@@ -1,6 +1,7 @@
-"""Plant dashboard. Run: python3 -m streamlit run dashboard.py
+"""Hidden Capacity Finder dashboard. Run: python3 -m streamlit run dashboard.py
 
 Pages
+  Home            - what the app does and the rules it uses, in plain language
   Plant overview  - every line at a glance: on track or not, value at stake, investment calls, actions
   Lines           - one line's flow, bottleneck, capacity and owner alerts
   Machines        - any machine on its own
@@ -19,7 +20,7 @@ import rules
 import run
 import writer
 
-st.set_page_config(page_title="Hidden Capacity · Plant dashboard", page_icon=":material/factory:", layout="wide")
+st.set_page_config(page_title="Hidden Capacity Finder", page_icon=":material/factory:", layout="wide")
 
 # Design tokens -----------------------------------------------------------------
 INK, INK2, MUTED, GRID, CARD = "#0b0b0b", "#52514e", "#8a8984", "#e3e2de", "#ffffff"
@@ -663,15 +664,114 @@ def page_setup():
                    "SLACK_WEBHOOK_URL is set, and saves a copy in outputs/.")
 
 
+def page_home():
+    st.markdown("""
+<div style="padding: 8px 0 4px">
+  <div style="font-size:2.4rem;font-weight:750;color:INK;line-height:1.15">Hidden Capacity Finder</div>
+  <div style="font-size:1.15rem;color:INK2;margin-top:6px">Before you buy capacity, find the capacity you already have,
+  one bottleneck at a time.</div>
+</div>""".replace("INK2", INK2).replace("INK", INK), unsafe_allow_html=True)
+    if st.button("Open the plant overview →", type="primary"):
+        st.switch_page(OVERVIEW_PAGE)
+
+    section("The problem")
+    st.markdown("The plant wants a new **\$1M press** to make more parts. But is it really short of machines, "
+                "or just **losing time on the ones it has**? This app finds out.")
+
+    section("What it does")
+    st.markdown("Every day after the shifts close, it reads machine data (PLC / sensors) and SAP data "
+                "and tells you four things:")
+    tiles([
+        ("1 · Bottleneck", "Which machine?", "limits each line"),
+        ("2 · Lost hours", "How many, why?", "on that machine, yesterday"),
+        ("3 · Owner", "Who fixes it?", "one action per loss"),
+        ("4 · Verdict", "Yes / No / Not yet", "is new capacity needed, and where"),
+    ])
+
+    section("The data it reads")
+    st.markdown("Six sources. **This demo uses synthetic data** for an 8-machine stamping and welding plant "
+                "(5 presses, 2 weld cells, 1 packing station). In a real plant, each one comes from:")
+    st.dataframe(pd.DataFrame([
+        {"Data": "Machine state logs (running / idle / stopped, part counts)",
+         "Real-plant source": "Machine sensors and PLCs (DMC), via an OPC UA server or a time-series historian"},
+        {"Data": "Standard cycle times", "Real-plant source": "SAP engineering / master data (routings, work centres)"},
+        {"Data": "Production bookings (good + scrap per shift)", "Real-plant source": "SAP PP (Production Planning)"},
+        {"Data": "Shift calendar (open hours, breaks, holidays)", "Real-plant source": "SAP PP work-centre capacity"},
+        {"Data": "Costs (margin per part, machine price)", "Real-plant source": "SAP CO (Controlling / Finance)"},
+        {"Data": "Demand (parts needed per day)", "Real-plant source": "SAP MRP (Material Requirements Planning)"},
+    ]), hide_index=True, width="stretch")
+
+    section("How it decides", "Plain rules, no guessing. The same data always gives the same answer.")
+    rules_ = [
+        ("1. Can we trust the data?",
+         "Machine part counts must match SAP bookings (a gap over 2% is flagged, over 5% fails). It also looks for "
+         "holes in the machine log and shifts that booked zero scrap. If the bottleneck's data fails, it reports the "
+         "data problem instead of a number."),
+        ("2. Is the SAP cycle time right?",
+         "It measures the real time per part from machine data (the typical value over the last 7 days) and "
+         "compares it with the SAP standard. A gap over 10% is flagged. In this demo SAP says Press 3 takes 42 s, "
+         "but it really takes 36 s, so SAP hides about 17% of its capacity."),
+        ("3. How well is each machine running? (OEE)",
+         "Three questions, multiplied together: Did it run? (hours running ÷ planned hours) · "
+         "Did it run at full speed? (actual vs true cycle time) · Were the parts good? (good ÷ all parts made)."),
+        ("4. Which machine limits the line?",
+         "A line is a chain of stations. One machine: its good output. Different parts for one assembly "
+         "(e.g. outer + inner door panel): the slowest feeder sets how many complete sets you get. Same part side "
+         "by side: outputs add up. The weakest station is the bottleneck; the next weakest is shown too."),
+    ]
+    cols = st.columns(2)
+    for i, (title, body) in enumerate(rules_):
+        with cols[i % 2].container(border=True):
+            st.markdown(f"**{title}**")
+            st.markdown(f"<div class='muted'>{body}</div>", unsafe_allow_html=True)
+
+    section("Where did the hours go?", "Every lost minute goes into one bucket, and each bucket has an owner.")
+    st.dataframe(pd.DataFrame([
+        {"Bucket": "Short stops", "Rule": "Stops under 5 minutes", "Owner": "Maintenance"},
+        {"Bucket": "Breakdowns", "Rule": "Stops of 5 minutes or more", "Owner": "Maintenance"},
+        {"Bucket": "Idle after start-up / breaks", "Rule": "Idle at shift start or after a break", "Owner": "Shift lead"},
+        {"Bucket": "Changeovers", "Rule": "Idle when the order changes", "Owner": "Shift lead"},
+        {"Bucket": "Slow running", "Rule": "Running slower than the true cycle time", "Owner": "Industrial engineer"},
+        {"Bucket": "Scrap", "Rule": "Parts made but not good", "Owner": "Quality"},
+    ]), hide_index=True, width="stretch")
+    st.caption("The top 3 buckets on the bottleneck become actions. Hours saved on any other machine add no output.")
+
+    section("The verdict")
+    for kind, label, text in [
+        ("good", "No", "Output already meets demand."),
+        ("warning", "Not yet", "Recovering half of the top-3 losses closes the gap."),
+        ("critical", "Yes", "Even after recovery, demand is above 85% of that machine's true maximum. The tool also "
+                            "says where to add capacity, which may not be the machine anyone asked for."),
+    ]:
+        st.markdown(f"{badge(kind, label)} &nbsp; {text}", unsafe_allow_html=True)
+
+    section("What's it worth?")
+    m = data["costs"]
+    st.markdown(f"**Parts recovered × \\${float(m['contribution_margin_per_part']):.2f} margin × "
+                f"{int(m['production_days_per_year'])} days**, compared with the cost of the new machine "
+                f"(press \\${float(m['capex_press']) / 1e6:.1f}M · weld cell \\${float(m['capex_weld']) / 1e3:.0f}K).")
+
+    st.divider()
+    st.markdown(
+        "<div class='muted'><b>Where the AI fits:</b> Claude only turns the computed numbers into short alerts for "
+        "each owner. It never does the maths, and people make the decisions. &nbsp;·&nbsp; "
+        "<b>Limits:</b> synthetic data; the bottleneck is calculated from output (proving it on the floor needs "
+        "'blocked' and 'starved' machine signals); one plant. &nbsp;·&nbsp; Built with Python, pandas, Streamlit "
+        "and the Claude API by Anuprita Kaple · "
+        "<a href='https://github.com/anuprita2000/hidden-capacity-agent'>Source on GitHub</a></div>",
+        unsafe_allow_html=True)
+
+
 # Navigation ------------------------------------------------------------------------
-OVERVIEW_PAGE = st.Page(page_overview, title="Plant overview", icon=":material/dashboard:", default=True)
+HOME_PAGE = st.Page(page_home, title="Home", icon=":material/home:", default=True)
+OVERVIEW_PAGE = st.Page(page_overview, title="Plant overview", icon=":material/dashboard:")
 LINE_PAGE = st.Page(page_line, title="Lines", icon=":material/account_tree:")
 MACHINE_PAGE = st.Page(page_machine, title="Machines", icon=":material/precision_manufacturing:")
 SETUP_PAGE = st.Page(page_setup, title="Line setup", icon=":material/tune:")
-nav = st.navigation({"Plant": [OVERVIEW_PAGE, LINE_PAGE, MACHINE_PAGE], "Admin": [SETUP_PAGE]})
+nav = st.navigation({"Start": [HOME_PAGE], "Plant": [OVERVIEW_PAGE, LINE_PAGE, MACHINE_PAGE], "Admin": [SETUP_PAGE]})
 
 with st.sidebar:
-    st.markdown("**Hidden Capacity Agent**")
+    st.markdown("**Hidden Capacity Finder**")
     st.caption("Find the capacity you already have, one bottleneck at a time.")
     st.session_state.day = st.selectbox("Production day", DAYS[::-1], index=DAYS[::-1].index(st.session_state.day))
 

@@ -4,7 +4,7 @@ Two modes:
   analyse_machine(data, day, machine)   -> one machine running on its own
   analyse_line(data, day, [m1, m2, ...]) -> machines in one continuous flow; slowest one is the bottleneck
 
-Every number the agent reports comes from here. Claude never does maths.
+Every number the app reports comes from here. Claude never does maths.
 """
 from datetime import datetime, timedelta
 from pathlib import Path

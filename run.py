@@ -123,7 +123,7 @@ def run_day(data, day, setup, use_ai=True, use_slack=True, quiet=False):
     if use_slack:
         text = notify.format_alerts(result, alerts, source)
         if setup.get("name"):
-            text = text.replace("Hidden Capacity Agent: ", f"Hidden Capacity Agent: {setup['name']} · ", 1)
+            text = text.replace("Hidden Capacity Finder: ", f"Hidden Capacity Finder: {setup['name']} · ", 1)
         status = notify.send(text, OUT / f"alerts_{day}_{key}.md")
         print(f"6. Alerts drafted by {source}, {status}:\n\n{text}")
     (OUT / "results" / f"{day}__{key}.json").write_text(json.dumps(result, indent=1, default=str))
@@ -132,7 +132,7 @@ def run_day(data, day, setup, use_ai=True, use_slack=True, quiet=False):
 
 
 def main():
-    p = argparse.ArgumentParser(description="Hidden Capacity Agent")
+    p = argparse.ArgumentParser(description="Hidden Capacity Finder")
     p.add_argument("--now", action="store_true", help="run immediately for the latest day")
     p.add_argument("--date", help="YYYY-MM-DD")
     p.add_argument("--mode", choices=["line", "single"])

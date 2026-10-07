@@ -9,7 +9,7 @@ def format_alerts(result, alerts, source):
         scope = "Line " + " → ".join(result.get("line", []))
     else:
         scope = result.get("name", result["scope"])
-    head = f"*Hidden Capacity Agent: {scope}, {result['date']}*"
+    head = f"*Hidden Capacity Finder: {scope}, {result['date']}*"
     if result.get("verdict"):
         head += f"\nNew capacity: *{result['verdict']['verdict']}*. {result['verdict']['reason']}"
     head += f"\nData health: {result['health']['status']}  ·  drafted by: {source} (a person decides)"

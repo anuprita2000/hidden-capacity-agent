@@ -1,8 +1,8 @@
-# Hidden Capacity Agent
+# Hidden Capacity Finder
 
 **Before you buy capacity, find the capacity you already have, one bottleneck at a time.**
 
-A plant has 5 presses, 2 weld cells and a packing station. It wants a new ~$1M press to hit its output target. Each morning this agent reads machine (PLC) and SAP data, finds the bottleneck, works out how many hours it really lost and why, and tells each owner what to fix. It also answers one question for the plant manager: **is new capacity needed? Yes / No / Not yet, and where?**
+A plant has 5 presses, 2 weld cells and a packing station. It wants a new ~$1M press to hit its output target. Each morning it reads machine (PLC) and SAP data, finds the bottleneck, works out how many hours it really lost and why, and tells each owner what to fix. It also answers one question for the plant manager: **is new capacity needed? Yes / No / Not yet, and where?**
 
 > Rules do all the maths. Claude only explains and drafts. People decide.
 
@@ -42,7 +42,7 @@ Lines are saved on the Line setup page (config/lines.json); the 6 am run analyse
 - **(Press 1 + Press 3) → Weld 1 → Pack 1:** Press 3 is the bottleneck at 1,098 sets/day against demand of 1,250. The verdict is **Not yet**: fix Press 3's short stops, job changes and start-up idle first.
 - **Swap Weld 1 for Weld 2:** Press 3 is still today's bottleneck, but Weld 2 sits only 7 units above it and can't reach demand even with its losses recovered. The verdict is **Yes, add capacity at Weld cell 2**, not a new press.
 
-**OEE range on the sample data:** every machine runs below 85% OEE on every day (79–83% for most machines, 73–76% for Press 3). `generate_data.py` re-checks this with the agent's own OEE maths and fails if any machine reaches 85%.
+**OEE range on the sample data:** every machine runs below 85% OEE on every day (79–83% for most machines, 73–76% for Press 3). `generate_data.py` re-checks this with the same OEE maths the app uses and fails if any machine reaches 85%.
 
 ## Who decides what
 
@@ -55,7 +55,7 @@ Lines are saved on the Line setup page (config/lines.json); the 6 am run analyse
 
 ## Daily flow (6 am, after shifts close)
 
-1. **Data health** for every machine: PLC counts vs SAP bookings, gaps in the PLC log, shifts with zero scrap booked. If a machine in the setup fails, the agent reports that instead of OEE.
+1. **Data health** for every machine: PLC counts vs SAP bookings, gaps in the PLC log, shifts with zero scrap booked. If a machine in the setup fails, it reports that instead of OEE.
 2. **True cycle time**: median time per cycle from the PLC vs the SAP standard. Flags gaps above 10%.
 3. **Metrics** per machine: OEE = availability × performance × quality, plus AUR and good parts per hour. Parts per cycle is handled, for example a double-hit die.
 4. **Loss finder**: sorts lost hours into short stops, breakdowns, idle after start-up/breaks, idle at job changes, other idle, slow running and scrap, then keeps the top 3.
@@ -76,7 +76,7 @@ Every file uses the same machine IDs: `PRS-01`…`PRS-05`, `WLD-01`, `WLD-02`, `
 | `costs.csv` | Finance | margin per part, capex per machine type, production days, recovery target |
 | `demand.csv` | Customer demand | date, target (machine ID or LINE), parts_required |
 
-The agent has to find these planted problems on its own:
+The app has to find these planted problems on its own:
 - PRS-03's SAP cycle time is 42 s; the press really runs at 36 s.
 - PRS-03 has a cluster of short stops between 14:00 and 18:00.
 - PRS-03 sits idle after start-up and breaks.

@@ -8,7 +8,7 @@ The CSVs stand in for real systems. Every file uses the same machine IDs (PRS-03
   costs.csv                -> finance inputs
   demand.csv               -> parts required per day, per machine and for the line
 
-Planted problems (the agent has to find these on its own):
+Planted problems (the app has to find these on its own):
   1. PRS-03 standard cycle time in SAP is 42 s; the press really runs at ~36 s.
   2. PRS-03 short-stop cluster between 14:00 and 18:00 on B shift (feeder jams).
   3. PRS-03 sits idle after shift start-up and after every break.
@@ -186,7 +186,7 @@ OEE_CEILING = 0.85  # requirement: every machine strictly below 85% OEE on every
 
 
 def check_oee_ceiling():
-    """Run the agent's own OEE maths over the new data and fail loudly if any machine-day reaches the ceiling."""
+    """Run the app's own OEE maths over the new data and fail loudly if any machine-day reaches the ceiling."""
     import rules
     data = rules.load(DATA_DIR)
     worst = {}
