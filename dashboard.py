@@ -151,11 +151,11 @@ if mode == "line":
 
     st.markdown(f"**Capacity per machine (parts/day). Demand = {v['demand']}**")
     chart = pd.DataFrame({
-        "Now": {s["name"]: s["capacity_now"] for s in steps},
-        "After loss recovery": {s["name"]: s["capacity_after_recovery"] for s in steps},
-        "True max": {s["name"]: s["true_capacity"] for s in steps},
+        "1 Now": {f"{s['step']}. {s['name']}": s["capacity_now"] for s in steps},
+        "2 After loss recovery": {f"{s['step']}. {s['name']}": s["capacity_after_recovery"] for s in steps},
+        "3 True max": {f"{s['step']}. {s['name']}": s["true_capacity"] for s in steps},
     })
-    st.bar_chart(chart, stack=False)
+    st.bar_chart(chart, stack=False, horizontal=True)
 
     bn = r["units"][r["bottleneck"]]
     st.divider()
@@ -177,14 +177,13 @@ for d in DAYS:
                   "oee": u["metrics"]["oee"], "hours_lost": u["hours_lost"],
                   "bottleneck": x.get("bottleneck", machine)})
 trend = pd.DataFrame(trend).set_index("date")
-trend["hours_recovered"] = (trend["hours_lost"].iloc[0] - trend["hours_lost"]).round(2)
 a, b = st.columns(2)
 with a:
     st.markdown("**Output vs demand (parts/day)**")
     st.line_chart(trend[["output", "demand"]])
 with b:
-    st.markdown("**Hours recovered vs first day** (focus machine)")
-    st.bar_chart(trend[["hours_recovered"]])
+    st.markdown("**Hours lost per day** (bottleneck / selected machine). Fixes show up as this falling.")
+    st.bar_chart(trend[["hours_lost"]])
 if mode == "line" and trend["bottleneck"].nunique() > 1:
     st.warning("The bottleneck moved during the week: " + ", ".join(f"{i}: {m}" for i, m in trend["bottleneck"].items()))
 
@@ -216,6 +215,6 @@ if alerts:
     st.markdown(f"**Owner alerts** (drafted by {source}, a person decides)")
     for owner, text in alerts.items():
         with st.expander(owner, expanded=True):
-            st.write(text)
+            st.write(text.replace("$", "\\$"))
 else:
     st.caption("No alerts drafted for this setup and day yet.")
