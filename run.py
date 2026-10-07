@@ -27,16 +27,27 @@ ROOT = Path(__file__).parent
 OUT = ROOT / "outputs"
 LOG = OUT / "daily_log.csv"
 LINES = ROOT / "config" / "lines.json"
+# A station is one machine, or several machines that feed one assembly ("assemble": different parts,
+# qty of each per finished unit) or run side by side ("add": same part, outputs add).
 DEFAULT_LINES = [
-    {"name": "Line A · Door panels", "machines": ["PRS-01", "PRS-03", "WLD-01", "PCK-01"], "demand": 1250},
-    {"name": "Line B · Brackets", "machines": ["PRS-02", "PRS-04", "WLD-02"], "demand": 1250},
+    {"name": "Line A · Door panels", "demand": 1250, "stations": [
+        {"machines": ["PRS-01", "PRS-03"], "combine": "assemble", "qty": {"PRS-01": 1, "PRS-03": 1}},
+        {"machines": ["WLD-01"]},
+        {"machines": ["PCK-01"]},
+    ]},
+    {"name": "Line B · Brackets", "demand": 1250, "stations": [
+        {"machines": ["PRS-02"]}, {"machines": ["PRS-04"]}, {"machines": ["WLD-02"]},
+    ]},
 ]
 
 
 def load_lines():
-    if LINES.exists():
-        return json.loads(LINES.read_text())["lines"]
-    return [dict(line) for line in DEFAULT_LINES]
+    """Lines with normalised stations. Older files with a flat "machines" list become one station per machine."""
+    raw = json.loads(LINES.read_text())["lines"] if LINES.exists() else json.loads(json.dumps(DEFAULT_LINES))
+    for line in raw:
+        line["stations"] = rules.normalize_stations(line.get("stations") or line.get("machines", []))
+        line.pop("machines", None)
+    return raw
 
 
 def save_lines(lines):
@@ -77,9 +88,11 @@ def print_result(result):
         return
     if result["mode"] == "line":
         print("   Line: " + " → ".join(
-            f"{s['machine']} {s['capacity_now']}/day" + (" [BOTTLENECK]" if s["is_bottleneck"] else "")
+            ("(" + " + ".join(x["machine"] for x in s["machines"]) + f" {s['combine']})" if len(s["machines"]) > 1
+             else s["machine"]) + f" {s['capacity_now']}/day" + (" [BOTTLENECK]" if s["is_bottleneck"] else "")
             for s in result["steps"]))
-        print(f"   Line capacity {result['line_capacity']}/day · next bottleneck {result['next_bottleneck']} "
+        print(f"   Line capacity {result['line_capacity']}/day · bottleneck {result['bottleneck']} · "
+              f"next bottleneck {result['next_bottleneck_name']} "
               f"(+{result['headroom_parts']} parts of headroom)")
     u = rules.focus_unit(result)
     ct, m, v = u["cycle_time"], u["metrics"], result["verdict"]
@@ -95,12 +108,12 @@ def print_result(result):
 
 
 def run_day(data, day, setup, use_ai=True, use_slack=True, quiet=False):
-    """setup: {"mode": "line"|"single", "machines": [...], "machine": id, "demand": int|None, "name": str|None}"""
+    """setup: {"mode": "line"|"single", "stations": [...], "machine": id, "demand": int|None, "name": str|None}"""
     result = rules.analyse(data, day, mode=setup["mode"], machine=setup.get("machine"),
-                           line=setup.get("machines"), demand=setup.get("demand"))
+                           line=setup.get("stations"), demand=setup.get("demand"))
     key = scope_key(result, setup.get("name"))
     if not quiet:
-        title = setup.get("name") or ("Line " + " → ".join(setup["machines"]) if setup["mode"] == "line"
+        title = setup.get("name") or ("Line " + " → ".join(result.get("line", [])) if setup["mode"] == "line"
                                       else setup["machine"])
         print(f"\n== {day} · {title} ==")
         print_result(result)
@@ -123,7 +136,8 @@ def main():
     p.add_argument("--now", action="store_true", help="run immediately for the latest day")
     p.add_argument("--date", help="YYYY-MM-DD")
     p.add_argument("--mode", choices=["line", "single"])
-    p.add_argument("--line", help="comma-separated machine IDs in flow order")
+    p.add_argument("--line", help="stations in flow order, comma-separated; join machines that feed one assembly "
+                                  "with +, e.g. PRS-01+PRS-03,WLD-01,PCK-01")
     p.add_argument("--machine", help="machine ID for single mode")
     p.add_argument("--backfill", action="store_true")
     p.add_argument("--no-ai", action="store_true")
@@ -135,13 +149,15 @@ def main():
     elif a.mode == "line" or a.line:
         if not a.line:
             p.error("--mode line needs --line PRS-01,PRS-03,...")
-        setups = [{"mode": "line", "machines": a.line.split(",")}]
+        setups = [{"mode": "line", "stations": [{"machines": st.split("+"), "combine": "assemble"}
+                                                for st in a.line.split(",")]}]
     else:
         setups = [{"mode": "line", **line} for line in load_lines()]
 
     data = rules.load()
     known = set(rules.machines(data))
-    used = [m for s in setups for m in s.get("machines", [])] + [s["machine"] for s in setups if "machine" in s]
+    used = [m for s in setups for m in rules.flat_machines(s.get("stations", []))] + \
+        [s["machine"] for s in setups if "machine" in s]
     unknown = sorted(set(used) - known)
     if unknown:
         p.error(f"unknown machine(s) {unknown}; known: {sorted(known)}")

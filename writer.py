@@ -55,8 +55,10 @@ def _facts(result):
         "owners": owners_for(result),
     }
     if result["mode"] == "line":
-        facts["line"] = {k: result[k] for k in ["steps", "bottleneck", "next_bottleneck",
-                                                 "line_capacity", "headroom_parts"]}
+        facts["line"] = {k: result[k] for k in ["steps", "bottleneck", "bottleneck_station", "next_bottleneck",
+                                                 "next_bottleneck_name", "line_capacity", "headroom_parts"]}
+        facts["line"]["note"] = ("Stations with combine='assemble' join different parts into one unit: the machine "
+                                 "making the fewest sets limits the station. combine='add' means same part, outputs add.")
     return facts
 
 
@@ -112,12 +114,17 @@ def draft_with_template(result):
 
     pm = ""
     if result["mode"] == "line":
-        names = {s["machine"]: s["name"] for s in result["steps"]}
-        flow = " → ".join(names.values())
-        pm = f"Line {flow}: bottleneck is {who} at {result['line_capacity']} parts/day (OEE {m['oee']:.0%}). "
+        flow = " → ".join(f"({s['name']})" if len(s["machines"]) > 1 else s["name"] for s in result["steps"])
+        pm = f"Line {flow}: bottleneck is {who} at {result['line_capacity']} units/day (OEE {m['oee']:.0%}). "
+        bn_step = next(s for s in result["steps"] if s["is_bottleneck"])
+        if bn_step["combine"] == "assemble":
+            others = [x for x in bn_step["machines"] if x["machine"] != unit["machine"]]
+            feeders = ", ".join("{} ({}/day)".format(x["name"], x["capacity_now"]) for x in others)
+            pm += (f"It feeds the same assembly as {feeders}, so the next station only gets "
+                   f"{result['line_capacity']} complete sets. ")
         if result["next_bottleneck"]:
-            pm += (f"Next bottleneck is {names[result['next_bottleneck']]}, {result['headroom_parts']} "
-                   f"parts/day of headroom above it. ")
+            pm += (f"Next bottleneck is {result['next_bottleneck_name']}, {result['headroom_parts']} "
+                   f"units/day of headroom above it. ")
     else:
         pm = f"{who} OEE {m['oee']:.0%}, {unit['hours_lost']} h lost yesterday. "
     pm += (f"Output {v['output_now']} vs demand {v['demand']}. New capacity: {v['verdict']}. {v['reason']} "

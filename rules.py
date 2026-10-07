@@ -275,46 +275,54 @@ def machine_capacity(data, machine, metrics, top3, ct):
     }
 
 
-def verdict(data, units, demand):
-    """Shared Yes / No / Not yet logic. units = machine results in flow order (one unit = standalone)."""
+def _node_from_unit(u):
+    cap = u["capacity"]
+    return {"id": u["machine"], "name": u["name"], "machine": u["machine"], "type": u["type"],
+            "now": cap["current_good_output"], "after": cap["current_good_output"] + cap["recoverable_parts"],
+            "true": cap["true_capacity"]}
+
+
+def verdict(data, nodes, demand):
+    """Shared Yes / No / Not yet logic.
+
+    nodes = capacity points in flow order: one per station in line mode, one machine in standalone mode.
+    Each node: id, name, machine (the machine to act on), type, now, after (with loss recovery), true (ceiling).
+    """
     costs = data["costs"]
     target = float(costs.get("recovery_target", 0.5))
     pct = int(target * 100)
-    now = {u["machine"]: u["capacity"]["current_good_output"] for u in units}
-    after = {u["machine"]: u["capacity"]["current_good_output"] + u["capacity"]["recoverable_parts"] for u in units}
-    true = {u["machine"]: u["capacity"]["true_capacity"] for u in units}
-    names = {u["machine"]: u["name"] for u in units}
-    out_now, out_after = min(now.values()), min(after.values())
-    short_now = [m for m in now if now[m] < demand]
-    bottleneck = min(now, key=now.get)
+    by_id = {n["id"]: n for n in nodes}
+    out_now = min(n["now"] for n in nodes)
+    out_after = min(n["after"] for n in nodes)
+    short_now = [n for n in nodes if n["now"] < demand]
+    bottleneck = min(nodes, key=lambda n: n["now"])
 
     if out_now >= demand:
         v, reason, buy_at = "No", f"Current output ({out_now}/day) already covers demand ({demand}).", None
     elif out_after >= demand:
         v, buy_at = "Not yet", None
-        reason = (f"Recovering {pct}% of the top 3 losses on {', '.join(names[m] for m in short_now)} lifts output "
+        reason = (f"Recovering {pct}% of the top 3 losses on {', '.join(n['name'] for n in short_now)} lifts output "
                   f"from {out_now} to {out_after}/day, covering demand of {demand}.")
     else:
-        short_after = [m for m in after if after[m] < demand]
-        need = [m for m in short_after if demand > YES_THRESHOLD * true[m]]
+        short_after = [n for n in nodes if n["after"] < demand]
+        need = [n for n in short_after if demand > YES_THRESHOLD * n["true"]]
         if need:
-            v, buy_at = "Yes", need[0]
-            reason = (f"Add capacity at {names[need[0]]}: demand ({demand}) is above {int(YES_THRESHOLD * 100)}% "
-                      f"of its true capacity ({true[need[0]]}/day), so loss recovery alone cannot close the gap.")
+            v, buy_at = "Yes", need[0]["machine"]
+            reason = (f"Add capacity at {need[0]['name']}: demand ({demand}) is above {int(YES_THRESHOLD * 100)}% "
+                      f"of its true capacity ({need[0]['true']}/day), so loss recovery alone cannot close the gap.")
         else:
             v, buy_at = "Not yet", None
-            reason = (f"{pct}% loss recovery leaves {', '.join(names[m] for m in short_after)} short "
+            reason = (f"{pct}% loss recovery leaves {', '.join(n['name'] for n in short_after)} short "
                       f"({out_after}/day vs {demand}), but true capacity still covers demand. "
                       f"Go after the full top-3 losses there before buying.")
 
     margin, days = float(costs["contribution_margin_per_part"]), float(costs["production_days_per_year"])
     gained = max(min(out_after, demand) - out_now, 0)
-    bn_type = next(u["type"] for u in units if u["machine"] == bottleneck)
     return {
         "demand": demand, "output_now": out_now, "output_after_recovery": out_after,
-        "gap_parts": max(demand - out_now, 0), "bottleneck": bottleneck,
+        "gap_parts": max(demand - out_now, 0), "bottleneck": bottleneck["machine"],
         "recoverable_value_per_year": round(gained * margin * days),
-        "capex_bottleneck_type": float(costs.get(f"capex_{bn_type}", 0)),
+        "capex_bottleneck_type": float(costs.get(f"capex_{bottleneck['type']}", 0)),
         "verdict": v, "reason": reason, "buy_at": buy_at, "owner": "Plant manager",
     }
 
@@ -344,39 +352,103 @@ def analyse_machine(data, day, machine, demand=None):
         return result
     unit = _machine_core(data, day, machine)
     result.update(unit)
-    result["verdict"] = verdict(data, [unit], _demand(data, day, machine) if demand is None else demand)
+    result["verdict"] = verdict(data, [_node_from_unit(unit)],
+                                _demand(data, day, machine) if demand is None else demand)
     return result
 
 
+def normalize_stations(line):
+    """Accept ["PRS-01", ...] (one machine per station) or [{"machines": [...], "combine": ..., "qty": {...}}, ...].
+
+    combine (only for stations with 2+ machines):
+      "assemble" - each machine makes a different part; one finished unit needs qty[m] of each (e.g. outer + inner panel)
+      "add"      - the machines make the same part side by side; their outputs add up
+    """
+    out = []
+    for st_ in line:
+        if isinstance(st_, str):
+            st_ = {"machines": [st_]}
+        ms = list(st_["machines"])
+        combine = st_.get("combine", "assemble") if len(ms) > 1 else "single"
+        qty = {m: max(1, int((st_.get("qty") or {}).get(m, 1))) for m in ms}
+        out.append({"machines": ms, "combine": combine, "qty": qty})
+    return out
+
+
+def flat_machines(line):
+    return [m for st_ in normalize_stations(line) for m in st_["machines"]]
+
+
+def _station_node(i, station, units):
+    """Capacity of one station in finished units/day, and the machine that limits it."""
+    ms, combine, qty = station["machines"], station["combine"], station["qty"]
+    cap = {m: units[m]["capacity"] for m in ms}
+    measures = {
+        "now": {m: cap[m]["current_good_output"] for m in ms},
+        "after": {m: cap[m]["current_good_output"] + cap[m]["recoverable_parts"] for m in ms},
+        "true": {m: cap[m]["true_capacity"] for m in ms},
+    }
+    node = {"id": f"S{i + 1}", "combine": combine}
+    if combine == "add":
+        for k, vals in measures.items():
+            node[k] = int(sum(vals.values()))
+        limiting = max(ms, key=lambda m: units[m]["hours_lost"])  # most hours to win back
+        node["name"] = " + ".join(units[m]["name"] for m in ms)
+    else:
+        for k, vals in measures.items():
+            node[k] = int(min(vals[m] / qty[m] for m in ms))
+        limiting = min(ms, key=lambda m: measures["now"][m] / qty[m])
+        node["name"] = units[limiting]["name"]
+    node["machine"], node["type"] = limiting, units[limiting]["type"]
+    node["station_name"] = " + ".join(units[m]["name"] for m in ms)
+    return node
+
+
 def analyse_line(data, day, line, demand=None):
-    """Line mode: machines in one continuous flow. The machine with the lowest good output is the bottleneck."""
-    health = data_health(data, day, line)
-    result = {"mode": "line", "scope": "LINE", "date": day.isoformat(), "line": list(line), "health": health}
+    """Line mode: stations in one continuous flow. The station with the lowest output is the bottleneck.
+
+    A station is one machine, or several machines that either feed one assembly (different parts) or run
+    side by side (same part). Capacity is counted in finished units per day.
+    """
+    stations = normalize_stations(line)
+    machines_ = flat_machines(stations)
+    health = data_health(data, day, machines_)
+    result = {"mode": "line", "scope": "LINE", "date": day.isoformat(), "line": machines_,
+              "stations": stations, "health": health}
     if health["status"] == "FAIL":
         bad = sorted({i["machine"] for i in health["issues"] if i["level"] == "FAIL"})
         result["halted"] = f"Data health check failed for {', '.join(bad)}; line capacity not reported."
         return result
-    units = [_machine_core(data, day, m) for m in line]
-    v = verdict(data, units, _demand(data, day, "LINE") if demand is None else demand)
-    ranked = sorted(units, key=lambda u: u["capacity"]["current_good_output"])
-    bn = ranked[0]
-    nxt = ranked[1] if len(ranked) > 1 else None
-    steps = [{
-        "step": i + 1, "machine": u["machine"], "name": u["name"], "type": u["type"],
-        "oee": u["metrics"]["oee"], "true_ct_s": u["cycle_time"]["true_ct_s"],
-        "capacity_now": u["capacity"]["current_good_output"],
-        "capacity_after_recovery": u["capacity"]["current_good_output"] + u["capacity"]["recoverable_parts"],
-        "true_capacity": u["capacity"]["true_capacity"], "sap_capacity": u["capacity"]["sap_capacity"],
-        "is_bottleneck": u["machine"] == bn["machine"],
-        "is_next_bottleneck": nxt is not None and u["machine"] == nxt["machine"],
-    } for i, u in enumerate(units)]
+    units = {m: _machine_core(data, day, m) for m in machines_}
+    nodes = [_station_node(i, st_, units) for i, st_ in enumerate(stations)]
+    v = verdict(data, nodes, _demand(data, day, "LINE") if demand is None else demand)
+    ranked = sorted(nodes, key=lambda n: n["now"])
+    bn, nxt = ranked[0], (ranked[1] if len(ranked) > 1 else None)
+    steps = []
+    for i, (st_, n) in enumerate(zip(stations, nodes)):
+        lim = units[n["machine"]]
+        steps.append({
+            "step": i + 1, "machine": n["machine"], "name": n["station_name"], "type": n["type"],
+            "combine": st_["combine"], "limiting_name": n["name"],
+            "oee": lim["metrics"]["oee"], "true_ct_s": lim["cycle_time"]["true_ct_s"],
+            "capacity_now": n["now"], "capacity_after_recovery": n["after"], "true_capacity": n["true"],
+            "is_bottleneck": n["id"] == bn["id"],
+            "is_next_bottleneck": nxt is not None and n["id"] == nxt["id"],
+            "machines": [{
+                "machine": m, "name": units[m]["name"], "qty": st_["qty"][m],
+                "capacity_now": units[m]["capacity"]["current_good_output"],
+                "oee": units[m]["metrics"]["oee"], "is_limiting": m == n["machine"] and st_["combine"] != "single",
+            } for m in st_["machines"]],
+        })
     result.update({
         "steps": steps,
-        "units": {u["machine"]: u for u in units},
+        "units": units,
         "bottleneck": bn["machine"],
+        "bottleneck_station": bn["station_name"],
         "next_bottleneck": nxt["machine"] if nxt else None,
-        "line_capacity": bn["capacity"]["current_good_output"],
-        "headroom_parts": (nxt["capacity"]["current_good_output"] - bn["capacity"]["current_good_output"]) if nxt else None,
+        "next_bottleneck_name": nxt["name"] if nxt else None,
+        "line_capacity": bn["now"],
+        "headroom_parts": (nxt["now"] - bn["now"]) if nxt else None,
         "verdict": v,
     })
     return result

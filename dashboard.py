@@ -4,7 +4,7 @@ Pages
   Plant overview  - every line at a glance: on track or not, value at stake, investment calls, actions
   Lines           - one line's flow, bottleneck, capacity and owner alerts
   Machines        - any machine on its own
-  Line setup      - create / edit / delete lines (machines in flow order + demand); the 6 am run uses this
+  Line setup      - create / edit / delete lines as stations (single machine, assembly, or side by side)
 """
 import json
 import uuid
@@ -49,6 +49,15 @@ st.markdown("""
 .node.bn {border: 2px solid #d03b3b;}
 .node.next {border: 2px dashed #fab219;}
 .node.big {min-width: 170px; padding: 12px 16px;}
+.station {border: 1px solid GRID; border-radius: 12px; padding: 8px; background: #f1f0ec;
+          display: flex; flex-direction: column; gap: 6px;}
+.station.bn {border: 2px solid #d03b3b;}
+.station.next {border: 2px dashed #fab219;}
+.st-head {font-size: .68rem; color: INK2; text-transform: uppercase; letter-spacing: .05em; font-weight: 650;}
+.st-body {display: flex; flex-direction: column; gap: 6px;}
+.st-foot {font-size: .85rem; color: INK;}
+.node.mini {padding: 6px 10px; min-width: 160px;}
+.node .num.sm {font-size: 1.05rem; margin-top: 2px;}
 .section {font-size: 1.05rem; font-weight: 650; color: INK; margin: 1.4rem 0 .4rem;}
 .muted {color: INK2; font-size: .85rem;}
 .stats {display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 8px;}
@@ -99,25 +108,40 @@ def style(chart, height=260):
 
 
 def flow_html(steps, big=False):
+    """Stations left to right. A station with several machines is drawn as a stacked group."""
     parts = []
-    for i, s in enumerate(steps):
-        cls = "node big" if big else "node"
-        role = ""
-        if s["is_bottleneck"]:
-            cls += " bn"
-            role = badge("critical", "Bottleneck")
-        elif s["is_next_bottleneck"]:
-            cls += " next"
-            role = badge("warning", "Next bottleneck")
-        parts.append(f'<div class="{cls}"><div class="nm">{s["name"]}</div><div class="id">{s["machine"]}</div>'
-                     f'<div class="num">{s["capacity_now"]:,}</div><div class="meta">good parts/day · OEE '
-                     f'{s["oee"]:.0%}</div>' + (f'<div style="margin-top:6px">{role}</div>' if role else "") + "</div>")
+    for i, s_ in enumerate(steps):
+        role, cls_role = "", ""
+        if s_["is_bottleneck"]:
+            cls_role, role = " bn", badge("critical", "Bottleneck")
+        elif s_["is_next_bottleneck"]:
+            cls_role, role = " next", badge("warning", "Next bottleneck")
+        if len(s_["machines"]) == 1:
+            cls = ("node big" if big else "node") + cls_role
+            parts.append(f'<div class="{cls}"><div class="nm">{s_["name"]}</div><div class="id">{s_["machine"]}</div>'
+                         f'<div class="num">{s_["capacity_now"]:,}</div><div class="meta">good parts/day · OEE '
+                         f'{s_["oee"]:.0%}</div>' + (f'<div style="margin-top:6px">{role}</div>' if role else "") + "</div>")
+        else:
+            assemble = s_["combine"] == "assemble"
+            head = "Different parts → one assembly" if assemble else "Same part · outputs add"
+            inner = ""
+            for x in s_["machines"]:
+                qty = f" · needs {x['qty']} per set" if assemble and x["qty"] != 1 else ""
+                tag = ('<div class="meta" style="color:#d03b3b;font-weight:600">✕ limits the sets</div>'
+                       if assemble and x["is_limiting"] else "")
+                inner += (f'<div class="node mini"><div class="nm">{x["name"]}</div><div class="id">{x["machine"]}{qty}</div>'
+                          f'<div class="num sm">{x["capacity_now"]:,}</div><div class="meta">parts/day · OEE {x["oee"]:.0%}'
+                          f'</div>{tag}</div>')
+            unit = "complete sets/day" if assemble else "parts/day combined"
+            parts.append(f'<div class="station{cls_role}"><div class="st-head">{head}</div><div class="st-body">{inner}'
+                         f'</div><div class="st-foot"><b>{s_["capacity_now"]:,}</b> {unit}</div>'
+                         + (f'<div>{role}</div>' if role else "") + "</div>")
         if i < len(steps) - 1:
             parts.append('<div class="arrow">→</div>')
     return '<div class="flow">' + "".join(parts) + "</div>"
 
 
-def bullet_chart(rows, demand, order):
+def bullet_chart(rows, demand, order, x_title="Good parts / day"):
     """Bullet chart: true max (track) > after recovery > now, with demand as a dashed rule."""
     df = pd.DataFrame(rows)
     domain = ["True max", "After loss recovery", "Now"]
@@ -128,7 +152,7 @@ def bullet_chart(rows, demand, order):
         layers.append(base.transform_filter(alt.datum.measure == measure).mark_bar(size=size, cornerRadiusEnd=4).encode(
             y=alt.Y("machine:N", title=None, axis=alt.Axis(labelLimit=220),
                     scale=alt.Scale(domain=order, paddingInner=0.35, paddingOuter=0.2)),
-            x=alt.X("parts:Q", title="Good parts / day"),
+            x=alt.X("parts:Q", title=x_title),
             color=alt.Color("measure:N", scale=scale),
             tooltip=[alt.Tooltip("machine:N", title="Machine"), alt.Tooltip("measure:N", title="Measure"),
                      alt.Tooltip("parts:Q", title="Parts/day", format=",")]))
@@ -179,8 +203,13 @@ DAYS = [d.isoformat() for d in rules.open_days(data)]
 
 
 @st.cache_data(show_spinner="Analysing PLC and SAP data...")
-def a_line(day_iso, machines, demand):
-    return rules.analyse_line(data, date.fromisoformat(day_iso), list(machines), demand)
+def a_line(day_iso, stations_json, demand):
+    return rules.analyse_line(data, date.fromisoformat(day_iso), json.loads(stations_json), demand)
+
+
+def skey(ln):
+    """Hashable key for a line's stations (cache key for a_line)."""
+    return json.dumps(rules.normalize_stations(ln["stations"]), sort_keys=True)
 
 
 @st.cache_data(show_spinner="Analysing PLC and SAP data...")
@@ -192,19 +221,31 @@ def own_demand(day_iso, machine):
     return rules._demand(data, date.fromisoformat(day_iso), machine)
 
 
+def _with_ids(line):
+    line = dict(line, id=uuid.uuid4().hex[:8])
+    line["stations"] = [dict(st_, sid=uuid.uuid4().hex[:8]) for st_ in line["stations"]]
+    return line
+
+
 if "lines" not in st.session_state:
-    st.session_state.lines = [dict(line, id=uuid.uuid4().hex[:8]) for line in run.load_lines()]
+    st.session_state.lines = [_with_ids(line) for line in run.load_lines()]
 if "day" not in st.session_state:
     st.session_state.day = DAYS[-1]
 
 
+def line_machines(ln):
+    return [m for st_ in ln["stations"] for m in st_["machines"]]
+
+
 def lines():
-    return [ln for ln in st.session_state.lines if len(ln["machines"]) >= 2]
+    """Lines that can be analysed: at least 2 machines and no empty station."""
+    return [ln for ln in st.session_state.lines
+            if len(line_machines(ln)) >= 2 and all(st_["machines"] for st_ in ln["stations"])]
 
 
 def line_of(machine):
     for ln in lines():
-        if machine in ln["machines"]:
+        if machine in line_machines(ln):
             return ln["name"]
     return "Standalone"
 
@@ -212,7 +253,7 @@ def line_of(machine):
 # Pages ---------------------------------------------------------------------------
 def page_overview():
     day = st.session_state.day
-    results = [(ln, a_line(day, tuple(ln["machines"]), int(ln["demand"]))) for ln in lines()]
+    results = [(ln, a_line(day, skey(ln), int(ln["demand"]))) for ln in lines()]
     ok = [(ln, r) for ln, r in results if not r.get("halted")]
 
     st.title("Plant overview")
@@ -266,7 +307,8 @@ def page_overview():
                 ("Output / demand", f"{v['output_now']:,} / {v['demand']:,}", f"{v['gap_parts']:,} parts/day short"
                  if v["gap_parts"] else "demand covered"),
                 ("Bottleneck", SHORT[r["bottleneck"]], f"OEE {bn['metrics']['oee']:.0%}"),
-                ("Next bottleneck", SHORT[nb] if nb else "—", f"{r['headroom_parts']:,} parts of headroom" if nb else ""),
+                ("Next bottleneck", r["next_bottleneck_name"] if nb else "—",
+                 f"{r['headroom_parts']:,} units of headroom" if nb else ""),
                 ("After loss recovery", f"{v['output_after_recovery']:,}", "parts/day"),
                 ("Value at stake", f"${v['recoverable_value_per_year'] / 1000:,.0f}K", "per year"),
             ]), unsafe_allow_html=True)
@@ -283,7 +325,7 @@ def page_overview():
                      {"machine": ln["name"], "measure": "After loss recovery", "parts": v["output_after_recovery"]},
                      {"machine": ln["name"], "measure": "True max", "parts": min(s["true_capacity"] for s in r["steps"])}]
         if rows:
-            st.altair_chart(bullet_chart(rows, max(r["verdict"]["demand"] for _, r in ok), order),
+            st.altair_chart(bullet_chart(rows, max(r["verdict"]["demand"] for _, r in ok), order, "Finished units / day"),
                             use_container_width=True)
     with right:
         section("Plant output vs demand, last 6 days", "Sum of all lines.")
@@ -291,7 +333,7 @@ def page_overview():
         for d in DAYS:
             out = dem = 0
             for ln in lines():
-                r = a_line(d, tuple(ln["machines"]), int(ln["demand"]))
+                r = a_line(d, skey(ln), int(ln["demand"]))
                 if not r.get("halted"):
                     out += r["verdict"]["output_now"]
                     dem += r["verdict"]["demand"]
@@ -357,7 +399,7 @@ def page_line():
     name = st.selectbox("Line", names, index=names.index(sel) if sel in names else 0)
     st.session_state.sel_line = name
     ln = next(x for x in lines() if x["name"] == name)
-    r = a_line(day, tuple(ln["machines"]), int(ln["demand"]))
+    r = a_line(day, skey(ln), int(ln["demand"]))
     if r.get("halted"):
         st.error(r["halted"])
         return
@@ -367,34 +409,42 @@ def page_line():
                 f"<div class='muted'>{v['reason']}</div>", unsafe_allow_html=True)
     st.markdown(flow_html(r["steps"], big=True), unsafe_allow_html=True)
     tiles([
-        ("Line capacity", f"{r['line_capacity']:,}", "good parts/day (bottleneck output)"),
-        ("Demand", f"{v['demand']:,}", "parts/day"),
-        ("Gap", f"{v['gap_parts']:,}", "parts/day short" if v["gap_parts"] else "demand covered"),
+        ("Line capacity", f"{r['line_capacity']:,}", "finished units/day (what the bottleneck allows)"),
+        ("Demand", f"{v['demand']:,}", "units/day"),
+        ("Gap", f"{v['gap_parts']:,}", "units/day short" if v["gap_parts"] else "demand covered"),
         ("Headroom", f"{r['headroom_parts']:,}" if r["headroom_parts"] is not None else "—",
-         f"before {SHORT[r['next_bottleneck']]} takes over" if r["next_bottleneck"] else ""),
+         f"units before {r['next_bottleneck_name']} takes over" if r["next_bottleneck"] else ""),
         ("After loss recovery", f"{v['output_after_recovery']:,}", "50% of top-3 losses on every machine"),
     ])
 
-    section("Capacity per machine", "Bars: true max, after loss recovery, now. Dashed: demand. Flow order, top to bottom.")
+    section("Capacity per station", "Units/day. Bars: true max, after loss recovery, now. Dashed: demand. "
+                                    "Assembly stations count complete sets.")
     rows, order = [], []
     for s in r["steps"]:
-        label_ = f"{s['step']}. {s['name']}"
+        label_ = f"{s['step']}. {s['name']}" + (" (sets)" if s["combine"] == "assemble" else "")
         order.append(label_)
         rows += [{"machine": label_, "measure": "True max", "parts": s["true_capacity"]},
                  {"machine": label_, "measure": "After loss recovery", "parts": s["capacity_after_recovery"]},
                  {"machine": label_, "measure": "Now", "parts": s["capacity_now"]}]
-    st.altair_chart(bullet_chart(rows, v["demand"], order), use_container_width=True)
+    st.altair_chart(bullet_chart(rows, v["demand"], order, "Finished units / day"), use_container_width=True)
 
     bn = r["units"][r["bottleneck"]]
     st.divider()
     st.subheader(f"Bottleneck deep-dive: {bn['name']}")
+    bn_step = next(s for s in r["steps"] if s["is_bottleneck"])
+    if bn_step["combine"] == "assemble":
+        others = ", ".join(f"{x['name']} makes {x['capacity_now']:,}/day" for x in bn_step["machines"]
+                           if x["machine"] != bn["machine"])
+        st.info(f"**{bn['name']} limits the assembly.** It makes {bn['capacity']['current_good_output']:,} parts/day "
+                f"while {others}, so the next station only receives {r['line_capacity']:,} complete sets. "
+                f"Extra parts from the faster press just pile up as inventory.")
     st.caption("Alerts focus here: an hour recovered on any other machine adds no line output.")
     machine_body(bn)
 
     section("Last 6 days")
     trend, lost = [], []
     for d in DAYS:
-        x = a_line(d, tuple(ln["machines"]), int(ln["demand"]))
+        x = a_line(d, skey(ln), int(ln["demand"]))
         if x.get("halted"):
             continue
         trend += [{"date": d[5:], "series": "Line output", "value": x["verdict"]["output_now"], "dash": "solid"},
@@ -515,37 +565,82 @@ def page_machine():
 
 def page_setup():
     st.title("Line setup")
-    st.markdown('<div class="muted">Describe how the plant actually runs: which machines feed which, in order, '
-                'and what each line must ship per day. Changes show on every page right away. '
-                '<b>Save</b> to make the 6 am run use them.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="muted">Describe how the plant actually runs. A line is a series of <b>stations</b> in '
+                'the order parts move. A station is one machine, or several machines that either make '
+                '<b>different parts for one assembly</b> (e.g. outer + inner door panel into one weld cell) or the '
+                '<b>same part side by side</b>. Changes show on every page right away; <b>Save</b> makes the 6 am '
+                'run use them.</div>', unsafe_allow_html=True)
     st.write("")
     ss = st.session_state
-    remove = None
+    remove_line = None
+    combine_labels = {"assemble": "Different parts → one assembly", "add": "Same part → outputs add"}
     for i, ln in enumerate(ss.lines):
         with st.container(border=True):
-            a, b, c = st.columns([3, 1.2, 0.6])
+            a, b, c = st.columns([3, 1.2, 0.7])
             ln["name"] = a.text_input("Line name", ln["name"], key=f"name_{ln['id']}")
-            ln["demand"] = int(b.number_input("Demand (parts/day)", min_value=0, step=50, value=int(ln["demand"]),
-                                              key=f"dem_{ln['id']}"))
+            ln["demand"] = int(b.number_input("Demand (finished units/day)", min_value=0, step=50,
+                                              value=int(ln["demand"]), key=f"dem_{ln['id']}"))
             c.write("")
             c.write("")
-            if c.button("Delete", key=f"del_{ln['id']}"):
-                remove = i
-            ln["machines"] = st.multiselect("Machines in flow order (pick them in the order parts move)", list(NAMES),
-                                            default=ln["machines"], format_func=NAMES.get, key=f"mach_{ln['id']}")
-            if len(ln["machines"]) < 2:
-                st.warning("A line needs at least 2 machines. This line is hidden until it has them.")
-            elif len(ln["machines"]) >= 2:
-                st.caption("Flow: " + " → ".join(SHORT[m] for m in ln["machines"]))
-    if remove is not None:
-        ss.lines.pop(remove)
+            if c.button("Delete line", key=f"del_{ln['id']}"):
+                remove_line = i
+            remove_station = None
+            for j, st_ in enumerate(ln["stations"]):
+                k = f"{ln['id']}_{st_['sid']}"
+                cols = st.columns([0.5, 3.2, 2.2, 0.6])
+                cols[0].markdown(f"<div style='padding-top:2.1rem;font-weight:650'>Station {j + 1}</div>",
+                                 unsafe_allow_html=True)
+                st_["machines"] = cols[1].multiselect("Machines at this station", list(NAMES), default=st_["machines"],
+                                                      format_func=NAMES.get, key=f"m_{k}")
+                if len(st_["machines"]) > 1:
+                    cur = st_.get("combine") if st_.get("combine") in combine_labels else "assemble"
+                    st_["combine"] = cols[2].radio("How do they combine?", list(combine_labels),
+                                                   index=list(combine_labels).index(cur),
+                                                   format_func=combine_labels.get, key=f"c_{k}")
+                    if st_["combine"] == "assemble":
+                        qcols = st.columns([0.5] + [1] * len(st_["machines"]) + [max(0.1, 4 - len(st_["machines"]))])
+                        qty = st_.get("qty") or {}
+                        new_qty = {}
+                        for q, m in zip(qcols[1:], st_["machines"]):
+                            new_qty[m] = int(q.number_input(f"{SHORT[m]}: parts per set", min_value=1, step=1,
+                                                            value=int(qty.get(m, 1)), key=f"q_{k}_{m}"))
+                        st_["qty"] = new_qty
+                else:
+                    st_["combine"] = "single"
+                    cols[2].markdown("<div class='muted' style='padding-top:2.2rem'>Single machine</div>",
+                                     unsafe_allow_html=True)
+                cols[3].write("")
+                cols[3].write("")
+                if len(ln["stations"]) > 1 and cols[3].button("✕", key=f"rs_{k}", help="Remove this station"):
+                    remove_station = j
+            if remove_station is not None:
+                ln["stations"].pop(remove_station)
+                st.rerun()
+            x, y = st.columns([1, 5])
+            if x.button("+ Add station", key=f"as_{ln['id']}"):
+                ln["stations"].append({"sid": uuid.uuid4().hex[:8], "machines": [], "combine": "single", "qty": {}})
+                st.rerun()
+            ms = line_machines(ln)
+            if len(ms) < 2 or not all(st_["machines"] for st_ in ln["stations"]):
+                y.warning("A line needs at least 2 machines and no empty stations. It is hidden until then.")
+            else:
+                flow = []
+                for st_ in ln["stations"]:
+                    if len(st_["machines"]) > 1:
+                        join = " + " if st_["combine"] == "assemble" else " ‖ "
+                        flow.append("(" + join.join(SHORT[m] for m in st_["machines"]) + ")")
+                    else:
+                        flow.append(SHORT[st_["machines"][0]])
+                y.caption("Flow: " + " → ".join(flow) + "   ·   + = assembled together, ‖ = same part side by side")
+    if remove_line is not None:
+        ss.lines.pop(remove_line)
         st.rerun()
 
-    used = [m for ln in ss.lines for m in ln["machines"]]
+    used = [m for ln in ss.lines for m in line_machines(ln)]
     dupes = sorted({m for m in used if used.count(m) > 1})
     if dupes:
-        st.warning(f"{', '.join(SHORT[m] for m in dupes)} is in more than one line. A machine can only feed one line, "
-                   f"so its output would be counted twice.")
+        st.warning(f"{', '.join(SHORT[m] for m in dupes)} appears more than once. A machine can only sit in one "
+                   f"station of one line, otherwise its output is counted twice.")
     names = [ln["name"] for ln in ss.lines]
     if len(set(names)) < len(names):
         st.warning("Two lines have the same name. Give each line a unique name.")
@@ -554,12 +649,12 @@ def page_setup():
 
     a, b, _ = st.columns([1, 1.6, 3.4])
     if a.button("+ Add line"):
-        ss.lines.append({"id": uuid.uuid4().hex[:8], "name": f"Line {chr(65 + len(ss.lines))}",
-                         "machines": [], "demand": 1000})
+        ss.lines.append({"id": uuid.uuid4().hex[:8], "name": f"Line {chr(65 + len(ss.lines))}", "demand": 1000,
+                         "stations": [{"sid": uuid.uuid4().hex[:8], "machines": [], "combine": "single", "qty": {}}]})
         st.rerun()
     if b.button("Save for the 6 am run", type="primary", disabled=bool(dupes) or len(set(names)) < len(names)):
-        run.save_lines([{k: ln[k] for k in ("name", "machines", "demand")} for ln in ss.lines
-                        if len(ln["machines"]) >= 2])
+        run.save_lines([{"name": ln["name"], "demand": ln["demand"],
+                         "stations": rules.normalize_stations(ln["stations"])} for ln in lines()])
         st.success("Saved. The daily run will analyse these lines and send each one's alerts.")
     with st.expander("How the daily run works"):
         st.code("0 6 * * * cd ~/hidden-capacity-agent && /usr/bin/python3 run.py --now >> outputs/cron.log 2>&1",

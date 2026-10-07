@@ -15,7 +15,19 @@ A plant has 5 presses, 2 weld cells and a packing station. It wants a new ~$1M p
 | **Plant overview** | Plant manager / leadership | Lines meeting demand, plant output vs demand, shortfall, recoverable $/yr, justified investment calls, data health; a card per line (status, flow, bottleneck, next bottleneck, value at stake); output vs demand by line; 6-day trend; **priority actions ranked by $**; status of every machine |
 | **Lines** | Line / production manager | The flow with the bottleneck marked, line capacity, gap, headroom, a bullet chart of capacity per machine against demand, a deep-dive on the bottleneck, trends, and owner alerts |
 | **Machines** | Maintenance / IE | Any machine on its own: OEE split, SAP vs PLC cycle time, losses, capacity vs demand (adjustable), OEE trend, alerts |
-| **Line setup** | Admin | Create, rename and delete lines; choose machines in flow order; set demand. It blocks a machine from being in two lines. **Save** makes the 6 am run use these lines |
+| **Line setup** | Admin | Create, rename and delete lines as **stations** in flow order; set demand. A station is one machine, several machines making **different parts for one assembly** (with parts per set), or several making the **same part side by side**. It blocks a machine from being used twice. **Save** makes the 6 am run use these lines |
+
+## Stations: how machines feed each other
+
+The same machines can give opposite answers depending on how they connect, so the line is described as stations:
+
+| Station type | Example | Station capacity |
+|---|---|---|
+| Single machine | Weld cell 1 | that machine's good output |
+| **Different parts → one assembly** | Press 1 (outer panel) + Press 3 (inner panel) → weld cell | complete sets = the smallest of (output ÷ parts per set). The slowest feeder limits it. |
+| **Same part → outputs add** | two presses stamping the same bracket | the sum of their outputs |
+
+On the sample data, Line A is **(Press 1 + Press 3) → Weld cell 1 → Packing 1**. Press 1 makes 1,778 outer panels but Press 3 only 1,071 inner panels, so the weld cell gets 1,071 complete sets. Press 3 is the bottleneck. If the two presses made the *same* part instead, they would supply 2,849/day, and Weld cell 1 would become the bottleneck.
 
 ## Two modes
 
@@ -82,7 +94,7 @@ python3 -m streamlit run dashboard.py    # plant dashboard (4 pages)
 
 Command-line overrides:
 ```bash
-python3 run.py --now --mode line --line PRS-01,PRS-03,WLD-02,PCK-01
+python3 run.py --now --line PRS-01+PRS-03,WLD-02,PCK-01   # + = assembled together at one station
 python3 run.py --now --mode single --machine WLD-02
 python3 run.py --date 2026-10-02 --no-ai
 ```
