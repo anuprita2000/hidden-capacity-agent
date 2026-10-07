@@ -1,10 +1,10 @@
 """Daily runner. Cron calls this at 6 am; `python3 run.py --now` runs it on demand for a demo.
 
-The setup (line or single machine) comes from config/setup.json, which the dashboard saves.
-Command-line flags override it.
+Lines are defined in config/lines.json (edit them on the dashboard's Line setup page).
+By default every line is analysed and each gets its own alerts. Flags override that.
 
 Usage:
-  python3 run.py --now                                        # latest day, saved setup
+  python3 run.py --now                                        # every configured line, latest day
   python3 run.py --now --mode line --line PRS-01,PRS-03,WLD-01,PCK-01
   python3 run.py --now --mode single --machine WLD-02
   python3 run.py --date 2026-10-02                            # a specific day
@@ -13,6 +13,7 @@ Usage:
 """
 import argparse
 import json
+import re
 from datetime import date
 from pathlib import Path
 
@@ -25,28 +26,37 @@ import writer
 ROOT = Path(__file__).parent
 OUT = ROOT / "outputs"
 LOG = OUT / "daily_log.csv"
-SETUP = ROOT / "config" / "setup.json"
-DEFAULT_SETUP = {"mode": "line", "line": ["PRS-01", "PRS-03", "WLD-01", "PCK-01"], "machine": "PRS-03"}
+LINES = ROOT / "config" / "lines.json"
+DEFAULT_LINES = [
+    {"name": "Line A · Door panels", "machines": ["PRS-01", "PRS-03", "WLD-01", "PCK-01"], "demand": 1250},
+    {"name": "Line B · Brackets", "machines": ["PRS-02", "PRS-04", "WLD-02"], "demand": 1250},
+]
 
 
-def load_setup():
-    if SETUP.exists():
-        return {**DEFAULT_SETUP, **json.loads(SETUP.read_text())}
-    return dict(DEFAULT_SETUP)
+def load_lines():
+    if LINES.exists():
+        return json.loads(LINES.read_text())["lines"]
+    return [dict(line) for line in DEFAULT_LINES]
 
 
-def save_setup(setup):
-    SETUP.parent.mkdir(exist_ok=True)
-    SETUP.write_text(json.dumps(setup, indent=1))
+def save_lines(lines):
+    LINES.parent.mkdir(exist_ok=True)
+    LINES.write_text(json.dumps({"lines": lines}, indent=1))
 
 
-def scope_key(result):
-    return "LINE_" + "-".join(result["line"]) if result["mode"] == "line" else result["scope"]
+def slug(text):
+    return re.sub(r"[^A-Za-z0-9]+", "-", text).strip("-")
 
 
-def log_day(result):
-    """Upsert one row per day and scope. Hours recovered = first logged day's lost hours minus today's."""
-    row = {"date": result["date"], "scope": scope_key(result), "status": result["health"]["status"]}
+def scope_key(result, name=None):
+    if result["mode"] == "line":
+        return slug(name) if name else "LINE_" + "-".join(result["line"])
+    return result["scope"]
+
+
+def log_day(result, key):
+    """Upsert one row per day and scope."""
+    row = {"date": result["date"], "scope": key, "status": result["health"]["status"]}
     unit = rules.focus_unit(result)
     if unit:
         m, v = unit["metrics"], result["verdict"]
@@ -55,11 +65,7 @@ def log_day(result):
     log = pd.read_csv(LOG) if LOG.exists() else pd.DataFrame()
     if not log.empty:
         log = log[~((log["date"] == row["date"]) & (log["scope"] == row["scope"]))]
-    log = pd.concat([log, pd.DataFrame([row])]).sort_values(["scope", "date"])
-    if "hours_lost" in log:
-        first = log.groupby("scope")["hours_lost"].transform("first")
-        log["hours_recovered"] = (first - log["hours_lost"]).round(2)
-    log.to_csv(LOG, index=False)
+    pd.concat([log, pd.DataFrame([row])]).sort_values(["scope", "date"]).to_csv(LOG, index=False)
 
 
 def print_result(result):
@@ -73,8 +79,7 @@ def print_result(result):
         print("   Line: " + " → ".join(
             f"{s['machine']} {s['capacity_now']}/day" + (" [BOTTLENECK]" if s["is_bottleneck"] else "")
             for s in result["steps"]))
-        nb = result["next_bottleneck"]
-        print(f"   Line capacity {result['line_capacity']}/day · next bottleneck {nb} "
+        print(f"   Line capacity {result['line_capacity']}/day · next bottleneck {result['next_bottleneck']} "
               f"(+{result['headroom_parts']} parts of headroom)")
     u = rules.focus_unit(result)
     ct, m, v = u["cycle_time"], u["metrics"], result["verdict"]
@@ -86,28 +91,30 @@ def print_result(result):
     for t in u["top3"]:
         print(f"   - {t['reason']}: {t['hours']} h, {t['events']} events -> {t['owner']}")
     print(f"5. Output {v['output_now']} vs demand {v['demand']} "
-          f"(after loss recovery: {v['output_after_recovery']}). "
-          f"New capacity: {v['verdict']}")
+          f"(after loss recovery: {v['output_after_recovery']}). New capacity: {v['verdict']}")
 
 
 def run_day(data, day, setup, use_ai=True, use_slack=True, quiet=False):
-    result = rules.analyse(data, day, mode=setup["mode"], machine=setup["machine"], line=setup["line"])
+    """setup: {"mode": "line"|"single", "machines": [...], "machine": id, "demand": int|None, "name": str|None}"""
+    result = rules.analyse(data, day, mode=setup["mode"], machine=setup.get("machine"),
+                           line=setup.get("machines"), demand=setup.get("demand"))
+    key = scope_key(result, setup.get("name"))
     if not quiet:
-        title = "Line " + " → ".join(setup["line"]) if setup["mode"] == "line" else setup["machine"]
+        title = setup.get("name") or ("Line " + " → ".join(setup["machines"]) if setup["mode"] == "line"
+                                      else setup["machine"])
         print(f"\n== {day} · {title} ==")
         print_result(result)
-    OUT.mkdir(exist_ok=True)
-    (OUT / "results").mkdir(exist_ok=True)
+    (OUT / "results").mkdir(parents=True, exist_ok=True)
     alerts, source = writer.draft_alerts(result, use_ai=use_ai)
     result["alerts"], result["alerts_source"] = alerts, source
     if use_slack:
         text = notify.format_alerts(result, alerts, source)
-        status = notify.send(text, OUT / f"alerts_{day}_{scope_key(result)}.md")
+        if setup.get("name"):
+            text = text.replace("Hidden Capacity Agent: ", f"Hidden Capacity Agent: {setup['name']} · ", 1)
+        status = notify.send(text, OUT / f"alerts_{day}_{key}.md")
         print(f"6. Alerts drafted by {source}, {status}:\n\n{text}")
-    (OUT / "results" / f"{day}__{scope_key(result)}.json").write_text(json.dumps(result, indent=1, default=str))
-    log_day(result)
-    if not quiet:
-        print(f"7. Logged to {LOG.name}")
+    (OUT / "results" / f"{day}__{key}.json").write_text(json.dumps(result, indent=1, default=str))
+    log_day(result, key)
     return result
 
 
@@ -123,27 +130,32 @@ def main():
     p.add_argument("--no-slack", action="store_true")
     a = p.parse_args()
 
-    setup = load_setup()
-    if a.mode:
-        setup["mode"] = a.mode
-    if a.line:
-        setup["line"] = a.line.split(",")
-    if a.machine:
-        setup["machine"] = a.machine
+    if a.mode == "single" or (a.machine and not a.mode):
+        setups = [{"mode": "single", "machine": a.machine or "PRS-03"}]
+    elif a.mode == "line" or a.line:
+        if not a.line:
+            p.error("--mode line needs --line PRS-01,PRS-03,...")
+        setups = [{"mode": "line", "machines": a.line.split(",")}]
+    else:
+        setups = [{"mode": "line", **line} for line in load_lines()]
 
     data = rules.load()
     known = set(rules.machines(data))
-    unknown = [m for m in setup["line"] + [setup["machine"]] if m not in known]
+    used = [m for s in setups for m in s.get("machines", [])] + [s["machine"] for s in setups if "machine" in s]
+    unknown = sorted(set(used) - known)
     if unknown:
         p.error(f"unknown machine(s) {unknown}; known: {sorted(known)}")
 
+    days = rules.open_days(data)
     if a.backfill:
-        for d in rules.open_days(data):
-            run_day(data, d, setup, use_ai=False, use_slack=False, quiet=True)
-        print(f"Backfilled {len(rules.open_days(data))} days into {LOG}")
+        for d in days:
+            for s in setups:
+                run_day(data, d, s, use_ai=False, use_slack=False, quiet=True)
+        print(f"Backfilled {len(days)} days x {len(setups)} setup(s) into {LOG}")
         return
-    day = date.fromisoformat(a.date) if a.date else rules.open_days(data)[-1]
-    run_day(data, day, setup, use_ai=not a.no_ai, use_slack=not a.no_slack)
+    day = date.fromisoformat(a.date) if a.date else days[-1]
+    for s in setups:
+        run_day(data, day, s, use_ai=not a.no_ai, use_slack=not a.no_slack)
 
 
 if __name__ == "__main__":

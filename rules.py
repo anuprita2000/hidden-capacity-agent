@@ -335,7 +335,7 @@ def _machine_core(data, day, machine):
     }
 
 
-def analyse_machine(data, day, machine):
+def analyse_machine(data, day, machine, demand=None):
     """Standalone mode: one machine running on its own against its own demand."""
     health = data_health(data, day, [machine])
     result = {"mode": "single", "scope": machine, "date": day.isoformat(), "health": health}
@@ -344,11 +344,11 @@ def analyse_machine(data, day, machine):
         return result
     unit = _machine_core(data, day, machine)
     result.update(unit)
-    result["verdict"] = verdict(data, [unit], _demand(data, day, machine))
+    result["verdict"] = verdict(data, [unit], _demand(data, day, machine) if demand is None else demand)
     return result
 
 
-def analyse_line(data, day, line):
+def analyse_line(data, day, line, demand=None):
     """Line mode: machines in one continuous flow. The machine with the lowest good output is the bottleneck."""
     health = data_health(data, day, line)
     result = {"mode": "line", "scope": "LINE", "date": day.isoformat(), "line": list(line), "health": health}
@@ -357,7 +357,7 @@ def analyse_line(data, day, line):
         result["halted"] = f"Data health check failed for {', '.join(bad)}; line capacity not reported."
         return result
     units = [_machine_core(data, day, m) for m in line]
-    v = verdict(data, units, _demand(data, day, "LINE"))
+    v = verdict(data, units, _demand(data, day, "LINE") if demand is None else demand)
     ranked = sorted(units, key=lambda u: u["capacity"]["current_good_output"])
     bn = ranked[0]
     nxt = ranked[1] if len(ranked) > 1 else None
@@ -389,5 +389,7 @@ def focus_unit(result):
     return result["units"][result["bottleneck"]] if result["mode"] == "line" else result
 
 
-def analyse(data, day, mode="single", machine="PRS-03", line=None):
-    return analyse_line(data, day, line) if mode == "line" else analyse_machine(data, day, machine)
+def analyse(data, day, mode="single", machine="PRS-03", line=None, demand=None):
+    if mode == "line":
+        return analyse_line(data, day, line, demand)
+    return analyse_machine(data, day, machine, demand)

@@ -6,14 +6,25 @@ A plant has 5 presses, 2 weld cells and a packing station. It wants a new ~$1M p
 
 > Rules do all the maths. Claude only explains and drafts. People decide.
 
-## Two modes, set in the dashboard
+## Plant dashboard
+
+`python3 -m streamlit run dashboard.py` opens a four-page dashboard:
+
+| Page | For | Shows |
+|---|---|---|
+| **Plant overview** | Plant manager / leadership | Lines meeting demand, plant output vs demand, shortfall, recoverable $/yr, justified investment calls, data health; a card per line (status, flow, bottleneck, next bottleneck, value at stake); output vs demand by line; 6-day trend; **priority actions ranked by $**; status of every machine |
+| **Lines** | Line / production manager | The flow with the bottleneck marked, line capacity, gap, headroom, a bullet chart of capacity per machine against demand, a deep-dive on the bottleneck, trends, and owner alerts |
+| **Machines** | Maintenance / IE | Any machine on its own: OEE split, SAP vs PLC cycle time, losses, capacity vs demand (adjustable), OEE trend, alerts |
+| **Line setup** | Admin | Create, rename and delete lines; choose machines in flow order; set demand. It blocks a machine from being in two lines. **Save** makes the 6 am run use these lines |
+
+## Two modes
 
 | Mode | Use it when | What it finds |
 |---|---|---|
 | **Line** | 2–6 machines in one continuous flow, e.g. Press 1 → Press 3 → Weld 1 → Pack 1 | The bottleneck (the machine making the fewest good parts/day), line capacity, the next bottleneck and the headroom before it takes over. Losses and alerts focus on the bottleneck only, because an hour recovered anywhere else adds no output. |
 | **Single machine** | One machine running on its own | That machine's OEE, losses, true capacity and verdict against its own demand |
 
-The setup you save in the dashboard is the one the 6 am run uses.
+Lines are saved on the Line setup page (config/lines.json); the 6 am run analyses every saved line.
 
 **Line mode can change the decision.** On the sample data:
 - **Press 1 → Press 3 → Weld 1 → Pack 1:** Press 3 is the bottleneck at 1,071/day against demand of 1,250. The verdict is **Not yet**: fix Press 3's short stops, job changes and start-up idle first.
@@ -65,8 +76,8 @@ The agent has to find these planted problems on its own:
 pip3 install -r requirements.txt
 python3 generate_data.py                 # build the fake plant week
 python3 run.py --backfill                # fill the trend log
-python3 run.py --now                     # today's run with the saved setup: alerts + Slack
-python3 -m streamlit run dashboard.py    # dashboard: choose the mode and line, save it as the daily setup
+python3 run.py --now                     # every saved line: alerts + Slack
+python3 -m streamlit run dashboard.py    # plant dashboard (4 pages)
 ```
 
 Command-line overrides:
