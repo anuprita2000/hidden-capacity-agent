@@ -33,7 +33,15 @@ HEALTH = {"PASS": ("good", "Data OK"), "WARN": ("warning", "Data warnings"), "FA
 st.markdown("""
 <style>
 .block-container {padding-top: 2rem; max-width: 1400px;}
-.kpi {background: CARD; border: 1px solid GRID; border-radius: 10px; padding: 14px 16px; height: 100%;}
+.kpi {background: CARD; border: 1px solid GRID; border-radius: 10px; padding: 14px 16px; height: 100%; box-sizing: border-box;}
+.kgrid {display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr)); gap: 12px; margin: 4px 0 8px;}
+.rgrid {display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr)); grid-auto-rows: 1fr; gap: 12px;
+        margin: 4px 0 8px;}
+.rcard {background: CARD; border: 1px solid GRID; border-radius: 10px; padding: 14px 16px; box-sizing: border-box;}
+.rcard .t {font-weight: 650; color: INK; font-size: .98rem;}
+.rcard .b {color: INK2; font-size: .88rem; margin-top: 6px; line-height: 1.45;}
+@media (max-width: 900px) {.kgrid {grid-template-columns: repeat(2, minmax(0, 1fr));}
+                           .rgrid {grid-template-columns: 1fr; grid-auto-rows: auto;}}
 .kpi .label {font-size: .74rem; color: INK2; text-transform: uppercase; letter-spacing: .05em; font-weight: 600;}
 .kpi .value {font-size: 1.7rem; font-weight: 650; color: INK; line-height: 1.25; margin-top: 4px;}
 .kpi .sub {font-size: .8rem; color: INK2; margin-top: 2px;}
@@ -80,9 +88,15 @@ def kpi(label, value, sub=""):
 
 
 def tiles(items):
-    cols = st.columns(len(items))
-    for c, item in zip(cols, items):
-        c.markdown(kpi(*item), unsafe_allow_html=True)
+    """A row of equal-size KPI boxes (CSS grid, so every box matches the tallest one)."""
+    cells = "".join(kpi(*item) for item in items)
+    st.markdown(f'<div class="kgrid" style="--n:{len(items)}">{cells}</div>', unsafe_allow_html=True)
+
+
+def cards(items, columns=2):
+    """Equal-size text cards in a grid, read left to right: [(title, body), ...]."""
+    cells = "".join(f'<div class="rcard"><div class="t">{t}</div><div class="b">{b}</div></div>' for t, b in items)
+    st.markdown(f'<div class="rgrid" style="--n:{columns}">{cells}</div>', unsafe_allow_html=True)
 
 
 def stats_html(items):
@@ -719,11 +733,7 @@ def page_home():
          "(e.g. outer + inner door panel): the slowest feeder sets how many complete sets you get. Same part side "
          "by side: outputs add up. The weakest station is the bottleneck; the next weakest is shown too."),
     ]
-    cols = st.columns(2)
-    for i, (title, body) in enumerate(rules_):
-        with cols[i % 2].container(border=True):
-            st.markdown(f"**{title}**")
-            st.markdown(f"<div class='muted'>{body}</div>", unsafe_allow_html=True)
+    cards(rules_, columns=2)
 
     section("Where did the hours go?", "Every lost minute goes into one bucket, and each bucket has an owner.")
     st.dataframe(pd.DataFrame([
