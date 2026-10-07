@@ -1,0 +1,6 @@
+machine,description,std_cycle_time_s
+P1,Press 1,30.0
+P2,Press 2,31.0
+P3,Press 3,42.0
+P4,Press 4,30.5
+P5,Press 5,32.0
