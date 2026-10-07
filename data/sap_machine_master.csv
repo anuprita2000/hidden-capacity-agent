@@ -1,6 +1,9 @@
-machine,description,std_cycle_time_s
-P1,Press 1,30.0
-P2,Press 2,31.0
-P3,Press 3,42.0
-P4,Press 4,30.5
-P5,Press 5,32.0
+machine,description,type,std_cycle_time_s,parts_per_cycle
+PRS-01,Press 1 (double-hit die),press,55.0,2
+PRS-02,Press 2,press,31.0,1
+PRS-03,Press 3,press,42.0,1
+PRS-04,Press 4,press,30.5,1
+PRS-05,Press 5,press,32.0,1
+WLD-01,Weld cell 1,weld,34.0,1
+WLD-02,Weld cell 2,weld,40.0,1
+PCK-01,Packing 1,pack,22.0,1

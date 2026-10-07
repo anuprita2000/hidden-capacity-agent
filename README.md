@@ -2,78 +2,85 @@
 
 **Before you buy capacity, find the capacity you already have, one bottleneck at a time.**
 
-A press line has 5 machines. Press 3 is the bottleneck, and the plant wants a new ~$1M press to hit its output target. Each morning this agent reads machine (PLC) and SAP data, works out how many hours the bottleneck really lost and why, and tells each owner what to fix. It also answers one question for the plant manager: **is the new press needed? Yes / No / Not yet.**
+A plant has 5 presses, 2 weld cells and a packing station. It wants a new ~$1M press to hit its output target. Each morning this agent reads machine (PLC) and SAP data, finds the bottleneck, works out how many hours it really lost and why, and tells each owner what to fix. It also answers one question for the plant manager: **is new capacity needed? Yes / No / Not yet, and where?**
 
 > Rules do all the maths. Claude only explains and drafts. People decide.
+
+## Two modes, set in the dashboard
+
+| Mode | Use it when | What it finds |
+|---|---|---|
+| **Line** | 2–6 machines in one continuous flow, e.g. Press 1 → Press 3 → Weld 1 → Pack 1 | The bottleneck (the machine making the fewest good parts/day), line capacity, the next bottleneck and the headroom before it takes over. Losses and alerts focus on the bottleneck only, because an hour recovered anywhere else adds no output. |
+| **Single machine** | One machine running on its own | That machine's OEE, losses, true capacity and verdict against its own demand |
+
+The setup you save in the dashboard is the one the 6 am run uses.
+
+**Line mode can change the decision.** On the sample data:
+- **Press 1 → Press 3 → Weld 1 → Pack 1:** Press 3 is the bottleneck at 1,071/day against demand of 1,250. The verdict is **Not yet**: fix Press 3's short stops, job changes and start-up idle first.
+- **Swap Weld 1 for Weld 2:** Press 3 is still today's bottleneck, but Weld 2 sits only 51 parts above it and can't reach demand even with its losses recovered. The verdict is **Yes, add capacity at Weld cell 2**, not a new press.
 
 ## Who decides what
 
 | Owner | Decision | Cost if wrong |
 |---|---|---|
-| Plant manager | Approve or deny the new press | ~$1M capex on capacity they already had |
-| Maintenance | Fix the short stops | Lost bottleneck hours = lost output |
-| Industrial engineer | Correct the cycle time | Wrong capacity numbers lead to wrong decisions |
+| Plant manager | Approve or deny new capacity, and where | ~$1M capex on capacity they already had, or on the wrong machine |
+| Maintenance | Fix short stops and breakdowns | Lost bottleneck hours = lost output |
+| Industrial engineer | Correct cycle times | Wrong capacity numbers lead to wrong decisions |
 | Shift lead | Fix start-up, break and job-change coverage | Idle bottleneck hours every shift |
 
 ## Daily flow (6 am, after shifts close)
 
-1. **Data health**: PLC counts vs SAP bookings, gaps in the PLC log, shifts with zero scrap booked. If the bottleneck's data fails, the agent reports that instead of OEE.
-2. **True cycle time**: median time between parts from the PLC vs the SAP standard. Flags gaps above 10%.
-3. **Press 3 metrics**: OEE = availability × performance × quality, plus AUR (run time ÷ calendar time) and good parts per hour.
-4. **Loss finder**: sorts lost hours into short stops, breakdowns, idle after start-up/breaks, idle at job changes, slow running and scrap, then keeps the top 3.
-5. **Capacity verdict**: compares current output, the SAP view of capacity and true capacity against demand. Recovering X hours gives Y parts, which answers whether the new press is needed.
-6. **AI step (Claude API)**: drafts one alert per owner covering the loss, the likely cause, the floor action and the hours and dollars at stake. If no API key is set, a plain template writes the alerts instead.
-7. **Log**: each day's hours lost and recovered are logged for the trend chart.
-
-## Example output (from the included fake data)
-
-```
-1. Data health: WARN
-   - [WARN] P3: 2026-10-02 shift B: zero scrap booked (512 good). Scrap was likely booked as good.
-2. Cycle time: SAP 42.0 s vs PLC 36.0 s (16.7%)  << FLAG
-3. OEE 72.5% = A 76.0% x P 97.3% x Q 98.1%
-4. Lost 4.13 h. Top 3:
-   - Short stops: 1.61 h, 51 events -> Maintenance
-   - Idle at job changes: 1.3 h, 4 events -> Shift lead
-   - Idle after start-up / breaks: 0.69 h, 4 events -> Shift lead
-5. Capacity: output 1090 vs demand 1250 (SAP thinks max 1285, true max 1500). New press: Not yet
-```
-
-> **Maintenance:** Press 3 lost 1.61 h yesterday to short stops (51 events, 41 of them between 14:00 and 18:00), likely feeder jams or sensor faults. Recovering half = 80 parts/day = $338/day.
->
-> **Plant manager:** Output 1090 vs demand 1250. New press: **Not yet**. Recovering 50% of the top 3 losses (1.8 h/day) adds 180 parts/day and closes the 160-part gap. Worth $226,800/yr against a $1,000,000 press.
+1. **Data health** for every machine: PLC counts vs SAP bookings, gaps in the PLC log, shifts with zero scrap booked. If a machine in the setup fails, the agent reports that instead of OEE.
+2. **True cycle time**: median time per cycle from the PLC vs the SAP standard. Flags gaps above 10%.
+3. **Metrics** per machine: OEE = availability × performance × quality, plus AUR and good parts per hour. Parts per cycle is handled, for example a double-hit die.
+4. **Loss finder**: sorts lost hours into short stops, breakdowns, idle after start-up/breaks, idle at job changes, other idle, slow running and scrap, then keeps the top 3.
+5. **Bottleneck and verdict**: compares current output, output after recovering 50% of the top 3 losses, and true capacity against demand, for each machine in the flow.
+6. **AI step (Claude API)**: drafts one alert per owner. If no API key is set, a template writes the alerts.
+7. **Log**: the day's results are saved for the trend charts.
 
 ## Data (fake CSVs that stand in for PLC and SAP)
+
+Every file uses the same machine IDs: `PRS-01`…`PRS-05`, `WLD-01`, `WLD-02`, `PCK-01`.
 
 | File | Stands in for | Columns |
 |---|---|---|
 | `plc_state_log.csv` | PLC / machine data collection | machine, timestamp, state (running/idle/stopped), part_count, order_id |
-| `sap_machine_master.csv` | SAP standard cycle times | machine, description, std_cycle_time_s |
+| `sap_machine_master.csv` | SAP machine master | machine, description, type, std_cycle_time_s, parts_per_cycle |
 | `sap_bookings.csv` | SAP production confirmations | date, shift, machine, good_qty, scrap_qty |
 | `shift_calendar.csv` | Plant calendar | date, shift, start, end, break_start, break_end, is_open |
-| `costs.csv` | Finance | contribution margin per part, new press capex, production days, recovery target |
-| `demand.csv` | Customer demand | date, machine, parts_required |
+| `costs.csv` | Finance | margin per part, capex per machine type, production days, recovery target |
+| `demand.csv` | Customer demand | date, target (machine ID or LINE), parts_required |
 
-The agent has to find these planted problems on its own: an inflated SAP cycle time (42 s vs 36 s real), a cluster of short stops from 14:00 to 18:00, idle time after start-up and breaks, one shift with zero scrap booked, and a 40-minute hole in Press 5's PLC log.
+The agent has to find these planted problems on its own:
+- PRS-03's SAP cycle time is 42 s; the press really runs at 36 s.
+- PRS-03 has a cluster of short stops between 14:00 and 18:00.
+- PRS-03 sits idle after start-up and breaks.
+- One PRS-03 shift has zero scrap booked.
+- PRS-05 has a 40-minute hole in its PLC log.
+- WLD-02 loses a lot of time at job changes, which makes it the next bottleneck when it's in the line.
 
 ## Run it
 
 ```bash
 pip3 install -r requirements.txt
-python3 generate_data.py          # build the fake plant week
-python3 run.py --backfill         # analyse every day (fills the trend chart)
-python3 run.py --now              # today's run: alerts + Slack
-streamlit run dashboard.py        # one-page dashboard
+python3 generate_data.py                 # build the fake plant week
+python3 run.py --backfill                # fill the trend log
+python3 run.py --now                     # today's run with the saved setup: alerts + Slack
+python3 -m streamlit run dashboard.py    # dashboard: choose the mode and line, save it as the daily setup
+```
+
+Command-line overrides:
+```bash
+python3 run.py --now --mode line --line PRS-01,PRS-03,WLD-02,PCK-01
+python3 run.py --now --mode single --machine WLD-02
+python3 run.py --date 2026-10-02 --no-ai
 ```
 
 Optional setup:
 - `export ANTHROPIC_API_KEY=...` turns on the Claude step. Without it, template alerts are used.
-- `export SLACK_WEBHOOK_URL=...` posts alerts to Slack. Alerts are always saved to `outputs/alerts_<date>.md`.
-- `python3 run.py --date 2026-10-02` analyses a specific day.
-- `python3 run.py --now --no-ai` skips the Claude step.
+- `export SLACK_WEBHOOK_URL=...` posts alerts to Slack. Alerts are always saved to `outputs/`.
 
 Schedule it daily at 6 am with cron (`crontab -e`):
-
 ```
 0 6 * * * cd /path/to/hidden-capacity-agent && /usr/bin/python3 run.py --now >> outputs/cron.log 2>&1
 ```
@@ -83,16 +90,14 @@ Schedule it daily at 6 am with cron (`crontab -e`):
 | File | Job |
 |---|---|
 | `generate_data.py` | Builds the fake plant data with the planted problems |
-| `rules.py` | All the maths: health, cycle time, OEE, losses, verdict |
+| `rules.py` | All the maths: health, cycle time, OEE, losses, bottleneck, verdict |
 | `writer.py` | Claude drafts the owner alerts, with a template fallback |
 | `notify.py` | Slack webhook + markdown copy |
-| `run.py` | Daily runner and CLI |
-| `dashboard.py` | Streamlit dashboard |
+| `run.py` | Daily runner, CLI and saved setup |
+| `dashboard.py` | Streamlit dashboard with the line builder and both modes |
 
-## Stack
+## Limits and next steps
 
-Python + pandas (rules) · Claude API (writing) · Slack webhook (alerts) · Streamlit (dashboard) · cron (schedule)
-
-## Next steps (out of scope)
-
-Predictive maintenance on the short-stop pattern · load balancing across plants · inventory and cost per unit · cloud deployment with a live PLC/SAP connection.
+- **The bottleneck is calculated, not observed.** Line mode compares each machine's demonstrated good output. To prove the bottleneck on the floor, the PLC should also log *blocked* (the next station is full) and *starved* (waiting for parts) states.
+- **Parallel machines at one step**, for example 2 presses feeding 1 welder, are not modelled yet.
+- **Out of scope:** predictive maintenance on the short-stop pattern, feeding true cycle times into a simulation model (DELMIA, Plant Simulation), load balancing across plants, and cloud deployment with a live PLC/SAP connection.

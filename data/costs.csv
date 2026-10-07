@@ -1,5 +1,7 @@
 item,value
 contribution_margin_per_part,4.2
-new_press_capex,1000000.0
+capex_press,1000000.0
+capex_weld,400000.0
+capex_pack,150000.0
 production_days_per_year,300.0
 recovery_target,0.5

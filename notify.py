@@ -5,10 +5,13 @@ import urllib.request
 
 
 def format_alerts(result, alerts, source):
-    cap = result.get("capacity", {})
-    head = f"*Hidden Capacity Agent: Press {result['machine'][1:]}, {result['date']}*"
-    if cap:
-        head += f"\nNew press: *{cap['verdict']}*. {cap['reason']}"
+    if result["mode"] == "line":
+        scope = "Line " + " → ".join(result.get("line", []))
+    else:
+        scope = result.get("name", result["scope"])
+    head = f"*Hidden Capacity Agent: {scope}, {result['date']}*"
+    if result.get("verdict"):
+        head += f"\nNew capacity: *{result['verdict']['verdict']}*. {result['verdict']['reason']}"
     head += f"\nData health: {result['health']['status']}  ·  drafted by: {source} (a person decides)"
     body = "\n\n".join(f"*{owner}*\n{text}" for owner, text in alerts.items())
     return head + "\n\n" + body

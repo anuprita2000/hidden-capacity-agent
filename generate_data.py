@@ -1,19 +1,20 @@
-"""Generate one week of fake plant data for a 5-press line.
+"""Generate one week of fake plant data: 5 presses, 2 weld cells, 1 packing station.
 
-The CSVs stand in for real systems:
+The CSVs stand in for real systems. Every file uses the same machine IDs (PRS-03, WLD-01, ...):
   plc_state_log.csv        -> PLC / machine data collection
-  sap_machine_master.csv   -> SAP standard cycle times
+  sap_machine_master.csv   -> SAP machine master: name, type, standard cycle time, parts per cycle
   sap_bookings.csv         -> SAP production confirmations (good + scrap per shift)
   shift_calendar.csv       -> plant shift calendar
   costs.csv                -> finance inputs
-  demand.csv               -> parts required per day
+  demand.csv               -> parts required per day, per machine and for the line
 
 Planted problems (the agent has to find these on its own):
-  1. Press 3 standard cycle time in SAP is 42 s; the press really runs at ~36 s.
-  2. Press 3 short-stop cluster between 14:00 and 18:00 on B shift (feeder jams).
-  3. Press 3 sits idle after shift start-up and after every break.
-  4. One shift (2026-10-02, B, Press 3) has zero scrap booked in SAP.
-  5. Press 5 has a 40-minute hole in its PLC log (2026-10-01, A shift).
+  1. PRS-03 standard cycle time in SAP is 42 s; the press really runs at ~36 s.
+  2. PRS-03 short-stop cluster between 14:00 and 18:00 on B shift (feeder jams).
+  3. PRS-03 sits idle after shift start-up and after every break.
+  4. One shift (2026-10-02, B, PRS-03) has zero scrap booked in SAP.
+  5. PRS-05 has a 40-minute hole in its PLC log (2026-10-01, A shift).
+  6. WLD-02 loses a lot of time at job changes; put it in a line and it becomes the next bottleneck.
 """
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -33,12 +34,23 @@ HOLIDAYS = {date(2026, 10, 4)}  # Sunday, plant closed
 SHIFTS = [("A", "06:00", "14:00", "10:00", "10:30"),
           ("B", "14:00", "22:00", "18:00", "18:30")]
 
-TRUE_CT = {"P1": 30.0, "P2": 31.0, "P3": 36.0, "P4": 30.0, "P5": 32.0}
-SAP_CT = {"P1": 30.0, "P2": 31.0, "P3": 42.0, "P4": 30.5, "P5": 32.0}
-BOTTLENECK = "P3"
+HEALTHY = dict(startup=(1, 3), post_break=(0.5, 2), job_changes=[240], stops=2, breakdown=0.1, slow_windows=1)
+MACHINES = {
+    "PRS-01": dict(HEALTHY, name="Press 1 (double-hit die)", type="press", ct=55, sap_ct=55, ppc=2),
+    "PRS-02": dict(HEALTHY, name="Press 2", type="press", ct=31, sap_ct=31, ppc=1),
+    "PRS-03": dict(name="Press 3", type="press", ct=36, sap_ct=42, ppc=1, startup=(8, 15), post_break=(8, 15),
+                   job_changes=[150, 330], stops=5, breakdown=0.25, slow_windows=2, cluster=True),
+    "PRS-04": dict(HEALTHY, name="Press 4", type="press", ct=30, sap_ct=30.5, ppc=1),
+    "PRS-05": dict(HEALTHY, name="Press 5", type="press", ct=32, sap_ct=32, ppc=1),
+    "WLD-01": dict(name="Weld cell 1", type="weld", ct=34, sap_ct=34, ppc=1, startup=(2, 5), post_break=(2, 5),
+                   job_changes=[240], stops=4, breakdown=0.15, slow_windows=1),
+    "WLD-02": dict(name="Weld cell 2", type="weld", ct=38, sap_ct=40, ppc=1, startup=(5, 9), post_break=(5, 9),
+                   job_changes=[120, 300], stops=8, breakdown=0.3, slow_windows=2),
+    "PCK-01": dict(HEALTHY, name="Packing 1", type="pack", ct=22, sap_ct=22, ppc=1),
+}
 
-ZERO_SCRAP = (date(2026, 10, 2), "B", "P3")
-MISSING = (date(2026, 10, 1), "A", "P5", "11:00", 40)  # date, shift, machine, from, minutes
+ZERO_SCRAP = (date(2026, 10, 2), "B", "PRS-03")
+MISSING = (date(2026, 10, 1), "A", "PRS-05", "11:00", 40)  # date, shift, machine, from, minutes
 
 
 def at(d, hhmm):
@@ -52,44 +64,36 @@ def minutes(x):
 
 def simulate_shift(rng, machine, d, shift, state):
     """Return PLC rows for one machine-shift. state carries the part counter and order number."""
+    p = MACHINES[machine]
     name, s, e, bs, be = shift
     s, e, bs, be = at(d, s), at(d, e), at(d, bs), at(d, be)
-    bn = machine == BOTTLENECK
-    ct = TRUE_CT[machine]
     rows = []
 
     def emit(t, st):
         rows.append((machine, t, st, state["counter"], f"{machine}-{state['order']:05d}"))
 
-    # Scheduled events
-    job_changes = [s + minutes(150), s + minutes(330)] if bn else [s + minutes(240)]
-    stops = []  # (time, minutes)
-    for t in rng.uniform(0, 480, rng.poisson(5 if bn else 2)):
-        stops.append((s + minutes(t), rng.uniform(1.0, 4.0)))
-    if bn and name == "B":  # planted feeder-jam cluster 14:00-18:00
+    job_changes = [s + minutes(m) for m in p["job_changes"]]
+    stops = [(s + minutes(t), rng.uniform(1.0, 4.0)) for t in rng.uniform(0, 480, rng.poisson(p["stops"]))]
+    if p.get("cluster") and name == "B":  # planted feeder-jam cluster 14:00-18:00
         n = 38 if d == LAST_DAY else int(rng.integers(28, 42))
-        for t in rng.uniform(0, 240, n):
-            stops.append((s + minutes(t), rng.uniform(0.8, 2.6)))
-    if rng.random() < (0.25 if bn else 0.1):  # occasional breakdown
+        stops += [(s + minutes(t), rng.uniform(0.8, 2.6)) for t in rng.uniform(0, 240, n)]
+    if rng.random() < p["breakdown"]:
         stops.append((s + minutes(rng.uniform(30, 450)), rng.uniform(10, 20)))
     stops.sort()
-    slow_windows = []
-    for _ in range(2 if bn else 1):
+    slow = []
+    for _ in range(p["slow_windows"]):
         w = s + minutes(rng.uniform(0, 420))
-        slow_windows.append((w, w + minutes(25)))
-
-    startup = rng.uniform(8, 15) if bn else rng.uniform(1, 3)
-    post_break = rng.uniform(8, 15) if bn else rng.uniform(0.5, 2)
+        slow.append((w, w + minutes(25)))
 
     t = s
     emit(t, "idle")
-    t += minutes(startup)
+    t += minutes(rng.uniform(*p["startup"]))
     emit(t, "running")
     break_done = False
     while t < e:
         if not break_done and t >= bs:
             emit(t, "idle")  # break (planned) + late restart (loss)
-            t = be + minutes(post_break)
+            t = be + minutes(rng.uniform(*p["post_break"]))
             break_done = True
             emit(t, "running")
             continue
@@ -106,15 +110,14 @@ def simulate_shift(rng, machine, d, shift, state):
             t += minutes(dur)
             emit(t, "running")
             continue
-        factor = 1.25 if any(a <= t < b for a, b in slow_windows) else 1.0
-        cycle = ct * factor * rng.normal(1.0, 0.01)
-        t_next = t + timedelta(seconds=cycle)
+        factor = 1.25 if any(a <= t < b for a, b in slow) else 1.0
+        t_next = t + timedelta(seconds=p["ct"] * factor * rng.normal(1.0, 0.01))
         if not break_done and t < bs <= t_next:
             t = bs
             continue
         if t_next >= e:
             break
-        state["counter"] += 1
+        state["counter"] += p["ppc"]  # PLC counts parts; a double-hit die makes 2 per cycle
         t = t_next
         emit(t, "running")
     return rows
@@ -125,15 +128,12 @@ def main():
     DATA_DIR.mkdir(exist_ok=True)
     days = [START + timedelta(days=i) for i in range(DAYS)]
 
-    # Shift calendar
-    cal = [{"date": d, "shift": sh[0], "start": sh[1], "end": sh[2],
-            "break_start": sh[3], "break_end": sh[4], "is_open": d not in HOLIDAYS}
-           for d in days for sh in SHIFTS]
-    pd.DataFrame(cal).to_csv(DATA_DIR / "shift_calendar.csv", index=False)
+    pd.DataFrame([{"date": d, "shift": sh[0], "start": sh[1], "end": sh[2],
+                   "break_start": sh[3], "break_end": sh[4], "is_open": d not in HOLIDAYS}
+                  for d in days for sh in SHIFTS]).to_csv(DATA_DIR / "shift_calendar.csv", index=False)
 
-    # PLC log + SAP bookings
     plc_rows, bookings = [], []
-    for machine in TRUE_CT:
+    for machine in MACHINES:
         state = {"counter": int(rng.integers(100000, 900000)), "order": 1}
         for d in days:
             if d in HOLIDAYS:
@@ -143,8 +143,7 @@ def main():
                 rows = simulate_shift(rng, machine, d, sh, state)
                 if (d, sh[0], machine) == MISSING[:3]:
                     gap_from = at(d, MISSING[3])
-                    gap_to = gap_from + minutes(MISSING[4])
-                    rows = [r for r in rows if not gap_from <= r[1] < gap_to]
+                    rows = [r for r in rows if not gap_from <= r[1] < gap_from + minutes(MISSING[4])]
                 plc_rows += rows
                 parts = state["counter"] - before
                 scrap = int(round(parts * rng.uniform(0.015, 0.025)))
@@ -159,23 +158,24 @@ def main():
     plc.to_csv(DATA_DIR / "plc_state_log.csv", index=False)
     pd.DataFrame(bookings).to_csv(DATA_DIR / "sap_bookings.csv", index=False)
 
-    # SAP machine master
-    pd.DataFrame([{"machine": m, "description": f"Press {m[1]}", "std_cycle_time_s": SAP_CT[m]}
-                  for m in SAP_CT]).to_csv(DATA_DIR / "sap_machine_master.csv", index=False)
+    pd.DataFrame([{"machine": m, "description": p["name"], "type": p["type"],
+                   "std_cycle_time_s": p["sap_ct"], "parts_per_cycle": p["ppc"]}
+                  for m, p in MACHINES.items()]).to_csv(DATA_DIR / "sap_machine_master.csv", index=False)
 
-    # Costs
     pd.DataFrame([
         {"item": "contribution_margin_per_part", "value": 4.20},
-        {"item": "new_press_capex", "value": 1_000_000},
+        {"item": "capex_press", "value": 1_000_000},
+        {"item": "capex_weld", "value": 400_000},
+        {"item": "capex_pack", "value": 150_000},
         {"item": "production_days_per_year", "value": 300},
         {"item": "recovery_target", "value": 0.5},
     ]).to_csv(DATA_DIR / "costs.csv", index=False)
 
-    # Demand (the line ships what the bottleneck makes)
-    pd.DataFrame([{"date": d, "machine": BOTTLENECK, "parts_required": 0 if d in HOLIDAYS else 1250}
-                  for d in days]).to_csv(DATA_DIR / "demand.csv", index=False)
+    # Demand: one row per machine (standalone mode) plus LINE (line mode)
+    pd.DataFrame([{"date": d, "target": t, "parts_required": 0 if d in HOLIDAYS else 1250}
+                  for d in days for t in list(MACHINES) + ["LINE"]]).to_csv(DATA_DIR / "demand.csv", index=False)
 
-    print(f"Wrote {len(plc):,} PLC rows, {len(bookings)} SAP bookings to {DATA_DIR}/")
+    print(f"Wrote {len(plc):,} PLC rows for {len(MACHINES)} machines, {len(bookings)} SAP bookings to {DATA_DIR}/")
 
 
 if __name__ == "__main__":
